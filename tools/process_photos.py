@@ -17,7 +17,7 @@
   端が切れないことを最優先にしていて、本が写真の端で切れていそうな写真は警告します。
 
 ほかの使い方:
-    --redo   inbox/_done・_failed の写真も含めて全部作り直す（CSVの書名・値段などはそのまま）
+    --redo   これまでの画像を全部消し、inbox/_done・_failed の元写真も含めて全部作り直す（CSVの書名・値段などはそのまま。元写真は消さない）
     --check  切り抜く場所を緑の枠で描いた確認用画像を inbox/_check/ に作るだけ
 - 裏表紙のバーコード（978…）を読み取って ISBN を取り、
   openBD → 国立国会図書館サーチ → Google Books の順に書名・著者・出版社を調べます。
@@ -321,6 +321,15 @@ def main() -> int:
 
     rows = read_csv(csv_path)
     by_id = {r.get("id", ""): r for r in rows}
+    if args.redo:
+        # 作り直し：これまでに作った画像は、間違いが混ざっているかもしれないので全部消してから始める。
+        # （元写真は消しません。inbox・_done・_failed のものを全部使います。書名・値段はCSVに残ります）
+        old_imgs = list(images.glob("*.webp"))
+        for f in old_imgs:
+            f.unlink()
+        for r in rows:
+            r["front"] = r["back"] = ""
+        print(f"これまでの画像 {len(old_imgs)} 枚を削除しました。元写真から全部作り直します。\n", flush=True)
     ids = set() if args.redo else set(by_id)   # 作り直しでは、前と同じIDを使い回す
     touched: set[str] = set()
     added: list[tuple[dict, list[str]]] = []

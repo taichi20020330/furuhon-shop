@@ -3,10 +3,14 @@
  * サイトから届いた取り置きの申し込みを、店主のGmailへメールで送ります。
  * 使い方は README.md の「2. 注文メールの設定」を見てください。
  */
-const OWNER_EMAIL = 'pinoko72447@gmail.com';
+// 送り先は、このスクリプトを作った（デプロイした）Googleアカウントのメールアドレスです。
+// アドレスをコードに書かないので、GitHubに上げても公開されません。
+const OWNER_EMAIL = Session.getEffectiveUser().getEmail();
+const MAX_PER_HOUR = 20;   // 1時間に受け付ける申し込みの上限（いたずら・連打対策）
 
 function doPost(e) {
   try {
+    if (!allow_()) return json_({ ok: false, error: 'busy' });
     const o = JSON.parse(e.postData.contents);
     if (!o || !o.name || !o.contact || !Array.isArray(o.books) || o.books.length === 0) {
       return json_({ ok: false, error: 'invalid' });
@@ -54,6 +58,21 @@ ${lines}
 // ブラウザでURLを開いたときの確認用
 function doGet() {
   return ContentService.createTextOutput('注文受付スクリプトは動いています。');
+}
+
+// 1時間あたりの受付数を数えて、上限を超えたら受け付けない
+function allow_() {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(5000);
+  try {
+    const cache = CacheService.getScriptCache();
+    const n = Number(cache.get('count') || 0);
+    if (n >= MAX_PER_HOUR) return false;
+    cache.put('count', String(n + 1), 3600);
+    return true;
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function json_(obj) {

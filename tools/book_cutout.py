@@ -591,19 +591,13 @@ def cut_out(img: Image.Image, max_side: int = 2000) -> tuple[Image.Image, str, b
         return Image.fromarray(full).convert("RGBA"), "本が見つからず写真をそのまま使用", False, ""
 
     q = order_corners(best["pts"] / sc)
-    tilt = max_tilt_deg(q)
-    if tilt <= STRAIGHT_DEG or not shape_ok(q):
-        # ほぼまっすぐに写っている本は、ゆがませず四角く切り出すだけにする
-        # （台形補正をかけると、検出が少しずれただけで画像が斜めにゆがむため）
-        H, W = full.shape[:2]
-        e = order_corners(_expand(q, PAD))
-        x0, x1 = int(max(0, np.floor(e[:, 0].min()))), int(min(W, np.ceil(e[:, 0].max())))
-        y0, y1 = int(max(0, np.floor(e[:, 1].min()))), int(min(H, np.ceil(e[:, 1].max())))
-        rect = full[y0:y1, x0:x1]
-        note = (note + "・" if note else "") + "補正なし"
-    else:
-        rect = _warp(full, _expand(q, PAD))
-        note = (note + "・" if note else "") + f"傾き{tilt:.0f}度を補正"
+    # 写真はどれもまっすぐに撮られている前提なので、台形補正はしない。
+    # 検出した四角形がほんの少しずれても画像がゆがまないよう、四角く切り出すだけにする。
+    H, W = full.shape[:2]
+    e = order_corners(_expand(q, PAD))
+    x0, x1 = int(max(0, np.floor(e[:, 0].min()))), int(min(W, np.ceil(e[:, 0].max())))
+    y0, y1 = int(max(0, np.floor(e[:, 1].min()))), int(min(H, np.ceil(e[:, 1].max())))
+    rect = full[y0:y1, x0:x1]
     rect = _trim_background(rect, best["centers"])
     warn = ""
     if best["clipped"]:

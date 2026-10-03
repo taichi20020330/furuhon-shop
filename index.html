@@ -485,6 +485,7 @@ stage.addEventListener("contextmenu", e => e.preventDefault());
 stage.addEventListener("pointerdown", e => {
   if (e.target.closest("button, .info")) return;
   longFired = false; cancelPress();
+  if (e.isPrimary) { pointers.clear(); pinch = null; drag = null; }   // 取りこぼした前の指の記録で、ピンチ扱いにならないように
   const hitBook = (document.elementFromPoint(e.clientX, e.clientY) || e.target).closest?.(".flip");
   if (hitBook && e.isPrimary) {
     const id = hitBook.closest(".book").dataset.id;
@@ -494,7 +495,7 @@ stage.addEventListener("pointerdown", e => {
     }, LONG_MS);
   }
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-  stage.setPointerCapture(e.pointerId);
+  try { stage.setPointerCapture(e.pointerId); } catch {}
   if (pointers.size === 1) { drag = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y }; moved = false; }
   if (pointers.size === 2) {
     const [a, b] = [...pointers.values()];
@@ -527,6 +528,7 @@ const endPointer = e => {
 };
 stage.addEventListener("pointerup", endPointer);
 stage.addEventListener("pointercancel", e => { moved = true; endPointer(e); });
+stage.addEventListener("lostpointercapture", e => { if (pointers.has(e.pointerId)) endPointer(e); });
 stage.addEventListener("wheel", e => {
   e.preventDefault();
   if (e.ctrlKey) zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.01));
@@ -538,9 +540,15 @@ document.getElementById("zout").onclick = () => zoomAt(innerWidth / 2, innerHeig
 /* ---------- 拡大表示（長押し）とランダム ---------- */
 const zveil = document.getElementById("zveil"), zcard = document.getElementById("zcard");
 let zId = null, zRandom = false, lastRandomId = null;
+function resetTouch() {
+  for (const pid of pointers.keys()) { try { stage.releasePointerCapture(pid); } catch {} }
+  pointers.clear(); drag = null; pinch = null; moved = false; cancelPress();
+  stage.classList.remove("dragging");
+}
 function showZoom(id, fromRandom = false) {
   const b = BOOKS.find(x => x.id === id);
   if (!b) return;
+  resetTouch();
   zId = id; zRandom = fromRandom; closeAll();
   const el = bookEls.get(id);
   const ar = (el && parseFloat(getComputedStyle(el).getPropertyValue("--ar"))) || (FORMAT[b.format] || FORMAT.bunko).ar;
@@ -573,7 +581,7 @@ function showZoom(id, fromRandom = false) {
   if (again) again.onclick = () => randomBook();
   document.getElementById("zclose").focus({ preventScroll: true });
 }
-function closeZoom() { zveil.hidden = true; zId = null; }
+function closeZoom() { zveil.hidden = true; zId = null; resetTouch(); }
 zveil.addEventListener("click", e => { if (e.target === zveil) closeZoom(); });
 zveil.addEventListener("contextmenu", e => e.preventDefault());
 addEventListener("keydown", e => { if (e.key === "Escape" && !zveil.hidden) closeZoom(); });

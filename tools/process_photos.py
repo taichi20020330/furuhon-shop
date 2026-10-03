@@ -24,7 +24,6 @@ import argparse
 import csv
 import gc
 import json
-import os
 import re
 import shutil
 import sys
@@ -109,253 +108,54 @@ def order_corners(pts: np.ndarray) -> np.ndarray:
     return np.array([pts[s.argmin()], pts[d.argmin()], pts[s.argmax()], pts[d.argmax()]], dtype=np.float32)
 
 
-DETECT_SIDE = 900   # 本の位置を探すときの作業サイズ（速さのため）
-
-
-def _clean(mask: np.ndarray) -> np.ndarray:
-    k = max(3, int(min(mask.shape) * 0.012)) | 1
-    m = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((k, k), np.uint8), iterations=2)
-    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((k, k), np.uint8))
-    return m
-
-
-def _mask_ai(rgb: np.ndarray, session) -> np.ndarray:
-    """AI（rembg）の切り抜き。表紙の絵だけを拾ってしまうことがある。"""
-    m = np.array(remove(Image.fromarray(rgb), session=session, only_mask=True))
-    return (m > 127).astype(np.uint8) * 255
-
-
-def _border_colors(lab: np.ndarray) -> np.ndarray:
-    h, w = lab.shape[:2]
-    b = max(4, int(min(h, w) * 0.03))
-    border = np.concatenate([lab[:b].reshape(-1, 3), lab[-b:].reshape(-1, 3),
-                             lab[:, :b].reshape(-1, 3), lab[:, -b:].reshape(-1, 3)]).astype(np.float32)
-    _, _, centers = cv2.kmeans(border, 3, None, (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0),
-                               3, cv2.KMEANS_PP_CENTERS)
-    return centers
-
-
-def _bg_distance(lab: np.ndarray, centers: np.ndarray, l_weight: float) -> np.ndarray:
-    wv = np.array([l_weight, 1.0, 1.0], np.float32)
-    return np.min(np.stack([np.linalg.norm((lab - c) * wv, axis=-1) for c in centers]), axis=0)
-
-
-def _mask_border(lab: np.ndarray, centers: np.ndarray, l_weight: float) -> np.ndarray:
-    """写真の四辺（＝机や床）の色と違う部分を本とみなす。l_weight を下げると影に強くなる。"""
-    dist = _bg_distance(lab, centers, l_weight)
-    dist = cv2.normalize(dist, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-    _, m = cv2.threshold(dist, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    return m
-
-
-def _mask_grabcut(rgb: np.ndarray) -> np.ndarray:
-    """「四辺は背景、真ん中に本」とだけ教えて境目を探させる。"""
-    h, w = rgb.shape[:2]
-    scale = 520 / max(h, w)
-    small = cv2.resize(rgb, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
-    sh, sw = small.shape[:2]
-    inset = max(3, int(min(sh, sw) * 0.025))
-    mask = np.zeros((sh, sw), np.uint8)
-    bgd, fgd = np.zeros((1, 65), np.float64), np.zeros((1, 65), np.float64)
-    cv2.grabCut(cv2.cvtColor(small, cv2.COLOR_RGB2BGR), mask, (inset, inset, sw - 2 * inset, sh - 2 * inset),
-                bgd, fgd, 4, cv2.GC_INIT_WITH_RECT)
-    m = np.where((mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD), 255, 0).astype(np.uint8)
-    return cv2.resize(m, (w, h), interpolation=cv2.INTER_NEAREST)
-
-
-def _quads_from_mask(mask: np.ndarray):
-    """マスクの大きな塊を、四角形（台形補正用の4点と、回転した長方形）にする。"""
-    h, w = mask.shape
-    contours, _ = cv2.findContours(_clean(mask), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    for c in sorted(contours, key=cv2.contourArea, reverse=True)[:2]:
-        if cv2.contourArea(c) < 0.06 * h * w:
-            continue
-        yield from _quads_from_contour(c)
-
-
-def _quads_from_contour(c):
-    area = cv2.contourArea(c)
-    peri = cv2.arcLength(c, True)
-    for eps in (0.015, 0.025, 0.035, 0.05):
-        ap = cv2.approxPolyDP(c, eps * peri, True)
-        if len(ap) == 4 and cv2.isContourConvex(ap):
-            q = ap.reshape(4, 2).astype(np.float32)
-            if cv2.contourArea(q) / area > 0.85:
-                yield q, True
-            break
-    yield cv2.boxPoints(cv2.minAreaRect(c)).astype(np.float32), False
-
-
-def _quads_from_edges(lab: np.ndarray):
-    """輪郭線（エッジ）から四角形を探す。白い本を白い机に置いたときに効く。"""
-    h, w = lab.shape[:2]
-    L = cv2.GaussianBlur(lab[..., 0].astype(np.uint8), (5, 5), 0)
-    med = float(np.median(L))
-    edges = cv2.Canny(L, max(5, 0.4 * med), min(255, 1.0 * med + 30))
-    edges = cv2.dilate(edges, np.ones((3, 3), np.uint8), iterations=2)
-    contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-    for c in sorted(contours, key=cv2.contourArea, reverse=True)[:6]:
-        if cv2.contourArea(c) < 0.06 * h * w:
-            continue
-        yield from _quads_from_contour(cv2.convexHull(c))
-
-
-def _score_quad(pts: np.ndarray, grad: np.ndarray, g_ref: float, lab: np.ndarray, centers: np.ndarray) -> dict:
-    """その四角形が本の輪郭らしいかを点数にする。
-    - 4辺すべてが、写真のなかの「くっきりした境目」に重なっているか（いちばん大事）
-    - 四角形のすぐ外側が、机や床の色か（表紙の絵だけを拾うのを防ぐ）
-    - 縦横比が本らしいか
-    """
-    h, w = grad.shape
-    q = order_corners(pts)
-    area = cv2.contourArea(q)
-    frac = area / (h * w)
-    if frac < 0.06:
-        return {"score": -9}
-    center = q.mean(axis=0)
-    side_scores, out_d, out_n = [], 0.0, 0
-    off = max(3.0, min(h, w) * 0.015)
-    for i in range(4):
-        p0, p1 = q[i], q[(i + 1) % 4]
-        d = p1 - p0
-        ln = float(np.linalg.norm(d))
-        if ln < 5:
-            return {"score": -9}
-        n = np.array([-d[1], d[0]]) / ln
-        if np.dot((p0 + p1) / 2 - center, n) < 0:
-            n = -n                                    # 外向きにそろえる
-        vals = []
-        for t in np.linspace(0.08, 0.92, 32):
-            pt = p0 + d * t
-            best = 0.0
-            for k in range(-4, 5):
-                x, y = int(round(pt[0] + n[0] * k)), int(round(pt[1] + n[1] * k))
-                if 0 <= x < w and 0 <= y < h:
-                    best = max(best, grad[y, x])
-            vals.append(best)
-            ox, oy = int(round(pt[0] + n[0] * off)), int(round(pt[1] + n[1] * off))
-            if 0 <= ox < w and 0 <= oy < h:
-                out_d += float(np.min(np.linalg.norm(centers - lab[oy, ox], axis=1)))
-                out_n += 1
-        side_scores.append(min(1.0, float(np.median(vals)) / g_ref))
-    rw = (np.linalg.norm(q[1] - q[0]) + np.linalg.norm(q[2] - q[3])) / 2
-    rh = (np.linalg.norm(q[3] - q[0]) + np.linalg.norm(q[2] - q[1])) / 2
-    aspect = min(rw, rh) / max(rw, rh)
-    if out_n >= 20:
-        outside = 1.0 - min(1.0, (out_d / out_n) / 28.0)
-    else:
-        outside = 0.5                                 # 本が写真いっぱい：外側が無い
-    score = (2.0 * min(side_scores) + 1.0 * float(np.mean(side_scores)) + 1.5 * outside
-             + (0.8 if 0.5 <= aspect <= 0.88 else 0.2 if 0.4 <= aspect <= 0.95 else -0.8)
-             + 0.6 * min(frac / 0.5, 1.0) - (0.8 if frac > 0.97 else 0))
-    return {"score": score, "edge": min(side_scores), "outside": outside, "frac": frac}
-
-
-def _snap_quad(q: np.ndarray, grad: np.ndarray) -> np.ndarray:
-    """四角形の各辺を、近くにあるいちばんくっきりした境目へ寄せる（角の背景の残りを消す）。"""
-    h, w = grad.shape
-    q = order_corners(q)
-    center = q.mean(axis=0)
-    R = max(4, int(min(h, w) * 0.025))
-    offs = np.arange(-R, R + 1, 2, dtype=np.float32)
-    t = np.linspace(0.06, 0.94, 40, dtype=np.float32)[:, None]
-    lines = []
-    for i in range(4):
-        p0, p1 = q[i], q[(i + 1) % 4]
-        d = p1 - p0
-        n = np.array([-d[1], d[0]], np.float32) / max(1e-3, float(np.linalg.norm(d)))
-        if np.dot((p0 + p1) / 2 - center, n) < 0:
-            n = -n
-        best, best_pq = -1.0, (p0, p1)
-        for a in offs:
-            a0 = p0 + n * a
-            for b in offs:
-                a1 = p1 + n * b
-                pts = a0 + (a1 - a0) * t
-                xs = np.clip(np.round(pts[:, 0]).astype(int), 0, w - 1)
-                ys = np.clip(np.round(pts[:, 1]).astype(int), 0, h - 1)
-                v = float(grad[ys, xs].mean()) - 0.002 * (abs(a) + abs(b))   # 動かしすぎない
-                if v > best:
-                    best, best_pq = v, (a0, a1)
-        lines.append(best_pq)
-
-    def inter(l1, l2):
-        (x1, y1), (x2, y2) = l1
-        (x3, y3), (x4, y4) = l2
-        den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
-        if abs(den) < 1e-6:
-            return None
-        px = ((x1 * y2 - y1 * x2) * (x3 - x4) - (x1 - x2) * (x3 * y4 - y3 * x4)) / den
-        py = ((x1 * y2 - y1 * x2) * (y3 - y4) - (y1 - y2) * (x3 * y4 - y3 * x4)) / den
-        return np.array([px, py], np.float32)
-
-    corners = [inter(lines[(i - 1) % 4], lines[i]) for i in range(4)]
-    if any(c is None for c in corners):
-        return q
-    new = np.array(corners, np.float32)
-    # 角が大きく飛んだら（平行線など）寄せるのはやめる
-    if np.max(np.linalg.norm(new - q, axis=1)) > 3 * R:
-        return q
-    return new
-
-
-def cut_out(img: Image.Image, session, max_side: int) -> tuple[Image.Image, str]:
-    """本を見つけて、まっすぐな長方形に切り出す。
-
-    背景色との差・影に強い背景色との差・輪郭線・GrabCut・AI の5通りで四角形の候補を出し、
-    「4辺が写真の境目と重なり、外側が机の色で、本らしい縦横比」の候補を採用する。
-    どれもダメなら写真をそのまま使う（失敗にはしない）。写真の向きは変えない。
-    """
+def cut_out(img: Image.Image, session, max_side: int) -> tuple[Image.Image, bool]:
+    """背景を消し、本が四角く見つかればゆがみを直した長方形で返す。"""
     img = ImageOps.exif_transpose(img).convert("RGB")
     if max(img.size) > max_side:
         img.thumbnail((max_side, max_side), Image.LANCZOS)
-    full = np.array(img)
-    H, W = full.shape[:2]
-    sc = DETECT_SIDE / max(H, W)
-    small = cv2.resize(full, (int(W * sc), int(H * sc)), interpolation=cv2.INTER_AREA)
-    lab = cv2.cvtColor(cv2.GaussianBlur(small, (0, 0), 1.5), cv2.COLOR_RGB2LAB).astype(np.float32)
-    centers = _border_colors(lab)
-    gx = cv2.Sobel(lab, cv2.CV_32F, 1, 0, ksize=3)
-    gy = cv2.Sobel(lab, cv2.CV_32F, 0, 1, ksize=3)
-    grad = np.sqrt((gx ** 2 + gy ** 2).sum(axis=2))
-    g_ref = max(1e-3, float(np.percentile(grad, 93)))
 
-    sources = (
-        ("背景色", lambda: _quads_from_mask(_mask_border(lab, centers, 1.0))),
-        ("背景色・影除け", lambda: _quads_from_mask(_mask_border(lab, centers, 0.3))),
-        ("輪郭線", lambda: _quads_from_edges(lab)),
-        ("GrabCut", lambda: _quads_from_mask(_mask_grabcut(small))),
-        ("AI", lambda: _quads_from_mask(_mask_ai(small, session))),
-    )
-    best = None
-    for name, gen in sources:
-        try:
-            for pts, persp in gen():
-                sc_ = _score_quad(pts, grad, g_ref, lab, centers)
-                if best is None or sc_["score"] > best["score"]:
-                    best = {**sc_, "pts": pts, "persp": persp, "source": name}
-        except Exception:
-            continue
-        if best and best["score"] > 5.2:
-            break                                     # 十分きれいに取れたら残りは省略（速さのため）
+    mask = np.array(remove(img, session=session, only_mask=True, post_process_mask=True))
+    _, binm = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
+    binm = cv2.morphologyEx(binm, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
+    contours, _ = cv2.findContours(binm, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        raise RuntimeError("本が見つかりませんでした")
+    c = max(contours, key=cv2.contourArea)
+    area = cv2.contourArea(c)
+    if area < 0.05 * mask.size:
+        raise RuntimeError("本が小さすぎるか、見つかりませんでした")
 
-    if best is None or best["score"] < 3.0:
-        return Image.fromarray(full).convert("RGBA"), "見つからず写真をそのまま使用"
+    # 四隅を探す：輪郭を多角形に近似して4点になれば台形補正
+    quad = None
+    peri = cv2.arcLength(c, True)
+    for eps in (0.01, 0.02, 0.03, 0.04, 0.05):
+        approx = cv2.approxPolyDP(c, eps * peri, True)
+        if len(approx) == 4 and cv2.isContourConvex(approx):
+            quad = approx.reshape(4, 2).astype(np.float32)
+            break
+    if quad is not None and cv2.contourArea(quad) / area > 0.92:
+        tl, tr, br, bl = order_corners(quad)
+        w = int(round(max(np.linalg.norm(tr - tl), np.linalg.norm(br - bl))))
+        h = int(round(max(np.linalg.norm(bl - tl), np.linalg.norm(br - tr))))
+        M = cv2.getPerspectiveTransform(np.array([tl, tr, br, bl]),
+                                        np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], dtype=np.float32))
+        rgb = cv2.warpPerspective(np.array(img), M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+        # 端の1%を落として背景の残りを消す
+        m = max(2, int(min(w, h) * 0.008))
+        out = Image.fromarray(rgb[m:h - m, m:w - m]).convert("RGBA")
+        return out, True
 
-    snapped = _snap_quad(best["pts"], grad)
-    if _score_quad(snapped, grad, g_ref, lab, centers)["score"] >= best["score"] - 0.15:
-        best["pts"], best["persp"] = snapped, True
-    tl, tr, br, bl = order_corners(best["pts"] / sc)
-    w = int(round(max(np.linalg.norm(tr - tl), np.linalg.norm(br - bl))))
-    h = int(round(max(np.linalg.norm(bl - tl), np.linalg.norm(br - tr))))
-    M = cv2.getPerspectiveTransform(np.array([tl, tr, br, bl]),
-                                    np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], dtype=np.float32))
-    rgb = cv2.warpPerspective(full, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
-    m = max(2, int(min(w, h) * 0.008))               # 端に残った背景を少し落とす
-    out = Image.fromarray(rgb[m:h - m, m:w - m]).convert("RGBA")
-    if os.environ.get("BOOK_DEBUG"):
-        print(f"[score {best['score']:.2f} edge {best['edge']:.2f} out {best['outside']:.2f} frac {best['frac']:.2f}] ", end="")
-    return out, ("台形補正" if best["persp"] else "四角に補正") + f"（{best['source']}）"
+    # 四角にならない（帯付き・角が折れている等）ときは、AIの切り抜きをそのまま使う
+    rgba = img.convert("RGBA")
+    rgba.putalpha(Image.fromarray(mask))
+    x, y, w, h = cv2.boundingRect(c)
+    return rgba.crop((x, y, x + w, y + h)), False
+
+
+def make_portrait(im: Image.Image) -> tuple[Image.Image, bool]:
+    if im.width > im.height * 1.05:
+        return im.rotate(90, expand=True), True
+    return im, False
 
 
 def read_isbn(im: Image.Image) -> str:
@@ -619,15 +419,16 @@ def main() -> int:
             ph = Photo(p, taken_time(p))
             try:
                 with Image.open(p) as raw:
-                    im, how = cut_out(raw, session, max_side=2000)
-                if how.startswith("見つからず"):
-                    ph.note.append("本の輪郭が取れず写真をそのまま使用")
+                    im, ph.warped = cut_out(raw, session, max_side=2000)
+                im, rotated = make_portrait(im)
+                if rotated:
+                    ph.note.append("横向きだったので回転")
                 ph.isbn = read_isbn(im)
                 # 保存サイズに縮めてから持っておく（大量の写真でもメモリを食わない）
                 if im.height > args.height:
                     im = im.resize((round(im.width * args.height / im.height), args.height), Image.LANCZOS)
                 ph.image = im
-                print(f"{how}{'  バーコード ' + ph.isbn if ph.isbn else ''}", flush=True)
+                print(f"{'台形補正' if ph.warped else '切り抜き'}{'  バーコード ' + ph.isbn if ph.isbn else ''}", flush=True)
             except Exception as e:
                 print(f"失敗：{e} → inbox/_failed へ", flush=True)
                 fail_dir.mkdir(exist_ok=True)

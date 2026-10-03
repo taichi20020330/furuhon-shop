@@ -656,9 +656,8 @@ function filter(move) {
     (!q || norm(b.title + b.author + b.publisher + (b.label || "")).includes(q)));
   const ids = new Set(hits.map(b => b.id));
   const filtering = q || activeCat || max !== Infinity;
-  const total = BOOKS.length;
   bookEls.forEach((el, id) => el.classList.toggle("dim", filtering && !ids.has(id)));
-  document.getElementById("found").textContent = filtering ? (hits.length ? `${hits.length}冊見つかりました` : "見つかりませんでした。言葉を変えてみてください") : `${total}冊の古本が浮かんでいます。ドラッグして歩き回ってみてください`;
+  document.getElementById("found").textContent = filtering ? (hits.length ? `${hits.length}冊見つかりました` : "見つかりませんでした。言葉を変えてみてください") : "";
   if (move && hits.length) {
     const xs = hits.map(b => b._x), ys = hits.map(b => b._y);
     const w = Math.max(...xs) - Math.min(...xs) + 320, h = Math.max(...ys) - Math.min(...ys) + 420;

@@ -1,5 +1,9 @@
-<title>浮かぶ古本屋</title>
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>浮かぶ古本屋</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@500;700&family=Zen+Kaku+Gothic+New:wght@400;500;700&family=Klee+One:wght@600&display=swap">
@@ -20,7 +24,8 @@
   color-scheme: light;
 }
 [hidden] { display: none !important; }
-html, body { height: 100%; }
+html, body { height: 100%; margin: 0; }
+img { max-width: 100%; }
 body {
   background: var(--paper); color: var(--ink);
   font-family: var(--f-body); font-size: 15px; line-height: 1.6;
@@ -37,8 +42,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 .cluster-label {
   position: absolute; transform: translate(-50%, -50%);
-  font-family: var(--f-display); font-weight: 700; font-size: 44px; letter-spacing: .12em;
-  color: #f1f0ec; white-space: nowrap; pointer-events: none; user-select: none;
+  font-family: var(--f-display); font-weight: 700; font-size: 60px; letter-spacing: .12em;
+  color: #e6e4de; white-space: nowrap; pointer-events: none; user-select: none;
 }
 .cluster-label small { display: block; text-align: center; font-family: var(--f-body); font-size: 12px; letter-spacing: .2em; color: #b9b8b3; font-weight: 500; }
 
@@ -168,7 +173,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .thumbs .mini { background: var(--c-bg); border-top: 4px solid var(--c-band); box-sizing: border-box; }
 .tray-sum { font-size: 13px; color: var(--ink-soft); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .tray-sum b { color: var(--ink); font-size: 16px; }
-.tray-empty { flex: 1; min-width: 0; font-size: 13px; line-height: 1.4; color: var(--ink-soft); }
+.tray-empty { flex: 1; min-width: 0; font-size: 12px; line-height: 1.4; color: var(--ink-soft); }
 
 .zoom { position: fixed; right: 16px; bottom: calc(env(safe-area-inset-bottom, 0px) + 96px); z-index: 19; display: flex; flex-direction: column; gap: 6px; }
 .zoom button { width: 36px; height: 36px; border-radius: 50%; border: 1px solid var(--hair); background: var(--paper); cursor: pointer; font-size: 18px; line-height: 1; }
@@ -215,6 +220,8 @@ pre.preview { text-align: left; white-space: pre-wrap; font-size: 12px; backgrou
   .flipper { transition: none; }
 }
 </style>
+</head>
+<body>
 
 <div id="stage" aria-label="本の空間。ドラッグで移動できます">
   <div id="world"></div>
@@ -303,7 +310,7 @@ async function loadBooks() {
   if (!res.ok) throw new Error(res.status);
   return parseCSV(await res.text()).map((r, i) => ({
     id: r.id || r.isbn || "row" + (i + 2),
-    title: r.title || "（書名未入力）", author: r.author || "", publisher: r.publisher || "", label: r.label || "",
+    title: r.title || "書名準備中", author: r.author || "", publisher: r.publisher || "", label: r.label || "",
     category: r.category || "未分類", format: r.format || "bunko",
     price: Number(String(r.price || "").replace(/[^0-9]/g, "")),
     condition: r.condition || "", sold: truthy(r.sold), sample: truthy(r.sample),
@@ -327,13 +334,33 @@ const yen = n => "¥" + n.toLocaleString("ja-JP");
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 
 /* ---------- 配置：カテゴリごとに島をつくる ---------- */
-const categories = [...new Set(BOOKS.map(b => b.category))];
-const CELL_W = 760, CELL_H = 820;
-const cols = Math.max(1, Math.ceil(Math.sqrt(categories.length * 1.4)));
-const clusters = categories.map((name, i) => {
-  const c = i % cols, r = Math.floor(i / cols);
-  return { name, x: c * CELL_W + (r % 2 ? CELL_W / 2 : 0), y: r * CELL_H, books: BOOKS.filter(b => b.category === name) };
+// 島の中はひまわりの種の並び（黄金角のらせん）。冊数が増えても重ならず、島が大きくなるだけ。
+const GOLDEN = Math.PI * (3 - Math.sqrt(5));
+const HOLE = 170, STEP = 128, GAP = 150;           // ラベルの穴・本どうしの間隔・島どうしのすき間
+const islandR = n => HOLE + STEP * Math.sqrt(n) + 90;
+const categories = [...new Set(BOOKS.map(b => b.category))]
+  .sort((a, b) => (a === "その他") - (b === "その他") || BOOKS.filter(x => x.category === b).length - BOOKS.filter(x => x.category === a).length);
+const clusters = categories.map(name => {
+  const books = BOOKS.filter(b => b.category === name);
+  return { name, books, r: islandR(books.length) };
 });
+// 島を棚のように左から並べ、はみ出したら次の段へ
+{
+  const total = clusters.reduce((s, c) => s + (2 * c.r + GAP) ** 2, 0);
+  const rowW = Math.max(2 * clusters[0].r + GAP, Math.sqrt(total) * 1.15);
+  let x = 0, y = 0, rowH = 0, row = [];
+  const flush = () => {                              // 段ごとに中央寄せ
+    const used = row.reduce((s, c) => s + 2 * c.r + GAP, 0) - GAP;
+    const shift = (rowW - used) / 2;
+    row.forEach(c => { c.x += shift; c.y = y + rowH / 2; });
+    y += rowH + GAP; x = 0; rowH = 0; row = [];
+  };
+  clusters.forEach(c => {
+    if (row.length && x + 2 * c.r > rowW) flush();
+    c.x = x + c.r; x += 2 * c.r + GAP; rowH = Math.max(rowH, 2 * c.r); row.push(c);
+  });
+  flush();
+}
 const world = document.getElementById("world");
 const bookEls = new Map();
 
@@ -345,13 +372,12 @@ clusters.forEach(cl => {
   world.appendChild(lab);
 
   const rand = rng(hash(cl.name));
-  const n = cl.books.length;
+  const turn = rand() * Math.PI * 2;
   cl.books.forEach((b, i) => {
-    // 中心のラベルを避けて、ゆるい円環に並べる
-    const ang = (i / n) * Math.PI * 2 + rand() * 0.5 - 0.25 + (n === 1 ? Math.PI / 2 : 0);
-    const rad = 210 + rand() * 70 + (n > 6 ? (i % 2) * 90 : 0);
-    b._x = cl.x + Math.cos(ang) * rad * 1.15;
-    b._y = cl.y + Math.sin(ang) * rad * 0.95;
+    const ang = turn + i * GOLDEN;
+    const rad = HOLE + STEP * Math.sqrt(i + 0.6) + (rand() - 0.5) * 18;
+    b._x = cl.x + Math.cos(ang) * rad;
+    b._y = cl.y + Math.sin(ang) * rad * 1.12 - 20;  // 本は縦長なので上下を少し広く
     world.appendChild(makeBook(b, rand));
   });
 });
@@ -371,8 +397,8 @@ function makeBook(b, rand) {
   el.className = "book" + (b.sold ? " sold" : "");
   el.dataset.id = b.id;
   el.style.cssText = `left:${b._x}px;top:${b._y}px;--w:${f.w}px;--ar:${f.ar};--dur:${(6 + rand() * 4).toFixed(2)}s;--delay:${(-rand() * 8).toFixed(2)}s;--r0:${(-2 + rand() * 1.5).toFixed(2)}deg;--r1:${(0.5 + rand() * 1.8).toFixed(2)}deg`;
-  const front = b.front ? `<img src="${esc(b.front)}" alt="${esc(b.title)}の表紙" draggable="false">` : coverHTML(b, "front");
-  const back = b.back ? `<img src="${esc(b.back)}" alt="${esc(b.title)}の裏表紙" draggable="false">` : coverHTML(b, "back");
+  const front = b.front ? `<img src="${esc(b.front)}" alt="${esc(b.title)}の表紙" draggable="false" loading="lazy" decoding="async">` : coverHTML(b, "front");
+  const back = b.back ? `<img src="${esc(b.back)}" alt="${esc(b.title)}の裏表紙" draggable="false" loading="lazy" decoding="async">` : coverHTML(b, "back");
   el.innerHTML = `
     <div class="float">
       <div class="flip" role="button" tabindex="0" aria-label="${esc(b.title)}を裏返す">
@@ -402,7 +428,7 @@ function makeBook(b, rand) {
 const stage = document.getElementById("stage");
 const view = { x: 0, y: 0, s: 1 };
 const apply = () => { world.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.s})`; };
-const clampS = s => Math.min(1.8, Math.max(0.35, s));
+const clampS = s => Math.min(1.8, Math.max(0.18, s));
 function centerOn(wx, wy, s = view.s, animate = true) {
   const target = { s, x: innerWidth / 2 - wx * s, y: innerHeight / 2 + 40 - wy * s };
   if (!animate || matchMedia("(prefers-reduced-motion: reduce)").matches) { Object.assign(view, target); apply(); return; }
@@ -634,8 +660,8 @@ function showDone(order, demo) {
 
 /* ---------- 最初の表示 ---------- */
 renderPicks();
-const first = BOOKS[0] || { _x: 0, _y: 0 };
-centerOn(first._x + 120, first._y - 60, innerWidth < 600 ? 0.62 : 0.9, false);
+const home = clusters[0] || { x: 0, y: 0 };
+centerOn(home.x, home.y, innerWidth < 600 ? 0.5 : 0.72, false);
 addEventListener("resize", () => filter(false));
 }
 
@@ -644,3 +670,5 @@ loadBooks().then(list => { BOOKS = list; start(); }).catch(err => {
   console.error(err);
 });
 </script>
+</body>
+</html>

@@ -179,6 +179,10 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .zoom button { width: 36px; height: 36px; border-radius: 50%; border: 1px solid var(--hair); background: var(--paper); cursor: pointer; font-size: 18px; line-height: 1; }
 
 /* ---------- 注文シート ---------- */
+/* スマホの長押しで「画像を保存」などのメニューが出ないようにする */
+#stage, #stage *, .zveil, .zveil *, .tray, .tray * { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+.face img, .zface img, .thumbs img { pointer-events: none; -webkit-user-drag: none; }
+
 /* 拡大表示（長押し・ランダム） */
 .zveil { position: fixed; inset: 0; z-index: 45; display: grid; place-items: center; padding: 20px; background: rgba(35,38,43,.42); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); animation: zfade .2s ease-out; }
 .zveil[hidden] { display: none !important; }
@@ -571,6 +575,7 @@ function showZoom(id, fromRandom = false) {
 }
 function closeZoom() { zveil.hidden = true; zId = null; }
 zveil.addEventListener("click", e => { if (e.target === zveil) closeZoom(); });
+zveil.addEventListener("contextmenu", e => e.preventDefault());
 addEventListener("keydown", e => { if (e.key === "Escape" && !zveil.hidden) closeZoom(); });
 
 function randomBook() {

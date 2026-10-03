@@ -35,6 +35,9 @@ from datetime import datetime
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
+if __name__ == "__main__":
+    print("準備中…（AIの読み込みに1〜2分かかることがあります）", flush=True)
+
 import numpy as np
 from PIL import Image, ImageOps
 
@@ -344,6 +347,7 @@ def main() -> int:
     if not files:
         print(f"写真がありません：{inbox} に入れてから実行してください。")
         return 0
+    print(f"写真の撮影日時を確認中（{len(files)}枚）…", flush=True)
     files.sort(key=lambda f: (taken_time(f), f.name))
     images.mkdir(parents=True, exist_ok=True)
     done_dir = inbox / "_done"

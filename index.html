@@ -336,8 +336,8 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&l
 /* ---------- 配置：カテゴリごとに島をつくる ---------- */
 // 島の中はひまわりの種の並び（黄金角のらせん）。冊数が増えても重ならず、島が大きくなるだけ。
 const GOLDEN = Math.PI * (3 - Math.sqrt(5));
-const HOLE = 170, STEP = 128, GAP = 150;           // ラベルの穴・本どうしの間隔・島どうしのすき間
-const islandR = n => HOLE + STEP * Math.sqrt(n) + 90;
+const HOLE = 110, STEP = 92, GAP = 64;           // ラベルの穴・本どうしの間隔・島どうしのすき間
+const islandR = n => HOLE + STEP * Math.sqrt(n) + 55;
 const categories = [...new Set(BOOKS.map(b => b.category))]
   .sort((a, b) => (a === "その他") - (b === "その他") || BOOKS.filter(x => x.category === b).length - BOOKS.filter(x => x.category === a).length);
 const clusters = categories.map(name => {
@@ -375,7 +375,7 @@ clusters.forEach(cl => {
   const turn = rand() * Math.PI * 2;
   cl.books.forEach((b, i) => {
     const ang = turn + i * GOLDEN;
-    const rad = HOLE + STEP * Math.sqrt(i + 0.6) + (rand() - 0.5) * 18;
+    const rad = HOLE + STEP * Math.sqrt(i + 0.6) + (rand() - 0.5) * 12;
     b._x = cl.x + Math.cos(ang) * rad;
     b._y = cl.y + Math.sin(ang) * rad * 1.12 - 20;  // 本は縦長なので上下を少し広く
     world.appendChild(makeBook(b, rand));
@@ -560,8 +560,9 @@ function filter(move) {
     (!q || norm(b.title + b.author + b.publisher + (b.label || "")).includes(q)));
   const ids = new Set(hits.map(b => b.id));
   const filtering = q || activeCat || max !== Infinity;
+  const total = BOOKS.length;
   bookEls.forEach((el, id) => el.classList.toggle("dim", filtering && !ids.has(id)));
-  document.getElementById("found").textContent = filtering ? (hits.length ? `${hits.length}冊見つかりました` : "見つかりませんでした。言葉を変えてみてください") : "";
+  document.getElementById("found").textContent = filtering ? (hits.length ? `${hits.length}冊見つかりました` : "見つかりませんでした。言葉を変えてみてください") : `${total}冊の古本が浮かんでいます。ドラッグして歩き回ってみてください`;
   if (move && hits.length) {
     const xs = hits.map(b => b._x), ys = hits.map(b => b._y);
     const w = Math.max(...xs) - Math.min(...xs) + 320, h = Math.max(...ys) - Math.min(...ys) + 420;
@@ -660,8 +661,9 @@ function showDone(order, demo) {
 
 /* ---------- 最初の表示 ---------- */
 renderPicks();
+filter(false);
 const home = clusters[0] || { x: 0, y: 0 };
-centerOn(home.x, home.y, innerWidth < 600 ? 0.5 : 0.72, false);
+centerOn(home.x, home.y, innerWidth < 600 ? 0.5 : 0.62, false);
 addEventListener("resize", () => filter(false));
 }
 

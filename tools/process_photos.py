@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gc
 import json
 import re
 import shutil
@@ -298,20 +299,33 @@ def new_id(isbn: str, taken: set[str]) -> str:
 
 # ---------------------------------------------------------------- メイン
 
-def pair_up(photos: list[Photo]) -> list[tuple[Photo, Photo | None]]:
-    """撮影順に2枚ずつ組にする。バーコードがある方を裏にする。"""
-    pairs, i = [], 0
-    while i < len(photos):
-        a = photos[i]
-        b = photos[i + 1] if i + 1 < len(photos) else None
-        # 「表・表」と並んでしまった場合（裏を撮り忘れ）：a だけで1冊
-        if b is not None and not a.isbn and not b.isbn and i + 2 < len(photos) and photos[i + 2].isbn:
-            pairs.append((a, None)); i += 1; continue
-        if b is None:
-            pairs.append((a, None)); i += 1; continue
-        front, back = (b, a) if (a.isbn and not b.isbn) else (a, b)
-        pairs.append((front, back)); i += 2
-    return pairs
+def decide(buf: list[Photo], final: bool):
+    """先頭から1冊ぶんを決める。(表, 裏, 使った枚数) か、もう1枚見ないと決められなければ None。
+
+    基本は「表 → 裏」の順。バーコードがある方を裏とみなし、裏を目印に組を作るので、
+    途中で1枚失敗したり撮り忘れたりしても、その後の組がずれません。
+    """
+    if not buf:
+        return None
+    a = buf[0]
+    if len(buf) == 1:
+        return (a, None, 1) if final else None
+    b = buf[1]
+    c = buf[2] if len(buf) > 2 else None
+    if not a.isbn and b.isbn:                 # 表 → 裏（ふつう）
+        return a, b, 2
+    if a.isbn and b.isbn:                     # 裏が2枚続いた：a の表は撮れていない
+        return a, None, 1
+    if c is None and not final:               # ここから先は3枚目を見て決める
+        return None
+    if not a.isbn and not b.isbn:
+        if c is not None and c.isbn:          # b は次の本(c)の表。a は裏なしの1冊
+            return a, None, 1
+        return a, b, 2                        # バーコードのない古い本：表 → 裏
+    # a にバーコード、b に無い
+    if c is not None and c.isbn:              # b は次の本の表。a は表なしの1冊
+        return a, None, 1
+    return b, a, 2                            # 裏 → 表 の順で撮った
 
 
 def main() -> int:
@@ -326,79 +340,109 @@ def main() -> int:
     args = ap.parse_args()
 
     inbox, images, csv_path = Path(args.inbox), Path(args.images), Path(args.csv)
-    files = sorted([p for p in inbox.iterdir() if p.is_file() and p.suffix.lower() in EXTS and not p.name.startswith(".")])
+    files = [p for p in inbox.iterdir() if p.is_file() and p.suffix.lower() in EXTS and not p.name.startswith(".")]
     if not files:
         print(f"写真がありません：{inbox} に入れてから実行してください。")
         return 0
+    files.sort(key=lambda f: (taken_time(f), f.name))
     images.mkdir(parents=True, exist_ok=True)
     done_dir = inbox / "_done"
     fail_dir = inbox / "_failed"
 
-    print(f"{len(files)}枚の写真を処理します（初回はAIモデルのダウンロードで少し待ちます）")
+    print(f"{len(files)}枚の写真を処理します（初回はAIモデルのダウンロードで少し待ちます）", flush=True)
+    print("途中で止めても、そこまでの本は保存されます。もう一度実行すると続きから処理します。\n", flush=True)
     session = new_session(args.model)
-
-    photos: list[Photo] = []
-    for n, p in enumerate(sorted(files, key=lambda f: (taken_time(f), f.name)), 1):
-        ph = Photo(p, taken_time(p))
-        try:
-            with Image.open(p) as raw:
-                im, ph.warped = cut_out(raw, session, max_side=2400)
-            im, rotated = make_portrait(im)
-            if rotated:
-                ph.note.append("横向きだったので回転")
-            ph.image = im
-            ph.isbn = read_isbn(im)
-            print(f"  [{n}/{len(files)}] {p.name}  {'台形補正' if ph.warped else '切り抜き'}"
-                  f"{'  バーコード ' + ph.isbn if ph.isbn else ''}")
-            photos.append(ph)
-        except Exception as e:
-            print(f"  [{n}/{len(files)}] {p.name}  失敗：{e} → inbox/_failed へ")
-            fail_dir.mkdir(exist_ok=True)
-            shutil.move(str(p), fail_dir / p.name)
 
     rows = read_csv(csv_path)
     ids = {r.get("id", "") for r in rows}
-    added = []
-    for front, back in pair_up(photos):
+    added: list[tuple[dict, list[str]]] = []
+
+    def emit(front: Photo, back: Photo | None) -> None:
+        """1冊ぶんを保存し、CSVにすぐ書き込み、元写真を _done へ移す。"""
         isbn = (back.isbn if back else "") or front.isbn
         info = {}
         if isbn and not args.no_lookup:
             info = lookup(isbn)
             time.sleep(0.3)
-        bid = new_id(isbn, ids)
+        bid = new_id(isbn or f"b-{front.path.stem}", ids)
         ids.add(bid)
-        fpath = images / f"{bid}-front.webp"
-        save_webp(front.image, fpath, args.height)
+        save_webp(front.image, images / f"{bid}-front.webp", args.height)
         bpath = ""
         if back:
             save_webp(back.image, images / f"{bid}-back.webp", args.height)
             bpath = f"images/{bid}-back.webp"
-        row = {"id": bid, "isbn": isbn, "front": f"images/{fpath.name}", "back": bpath,
+        row = {"id": bid, "isbn": isbn, "front": f"images/{bid}-front.webp", "back": bpath,
                "price": "", "sold": "", "sample": "", "condition": "", **info}
         rows.append(row)
-        added.append((row, front, back))
-        if not args.keep:
-            done_dir.mkdir(exist_ok=True)
-            for ph in (front, back):
-                if ph:
-                    shutil.move(str(ph.path), done_dir / ph.path.name)
+        write_csv(csv_path, rows)      # 1冊ごとに保存（途中で止まっても失われない）
 
-    write_csv(csv_path, rows)
-
-    print(f"\n{len(added)}冊を data/books.csv に追加しました。")
-    for row, front, back in added:
         warn = []
         if not back:
-            warn.append("裏の写真なし")
-        if not row.get("isbn"):
+            warn.append("表の写真なし（裏表紙を表に使用）" if front.isbn else "裏の写真なし")
+        if not isbn:
             warn.append("ISBNが読めず書名は空欄")
         elif not row.get("title"):
             warn.append("書誌情報が見つからず空欄")
         for ph in (front, back):
             if ph and ph.note:
                 warn += ph.note
-        title = row.get("title") or "（書名未入力）"
-        print(f"  {row['id']}  {title}" + (f"   ※{'・'.join(warn)}" if warn else ""))
+        added.append((row, warn))
+        print(f"      → 登録 {bid}  {row.get('title') or '（書名未入力）'}" + (f"   ※{'・'.join(warn)}" if warn else ""), flush=True)
+
+        if not args.keep:
+            done_dir.mkdir(exist_ok=True)
+            for ph in (front, back):
+                if ph:
+                    shutil.move(str(ph.path), done_dir / ph.path.name)
+        for ph in (front, back):       # メモリを空ける
+            if ph:
+                ph.image = None
+
+    buf: list[Photo] = []
+
+    def drain(final: bool) -> None:
+        while True:
+            d = decide(buf, final)
+            if d is None:
+                return
+            front, back, used = d
+            del buf[:used]
+            emit(front, back)
+
+    try:
+        for n, p in enumerate(files, 1):
+            print(f"  [{n}/{len(files)}] {p.name}  ", end="", flush=True)
+            ph = Photo(p, taken_time(p))
+            try:
+                with Image.open(p) as raw:
+                    im, ph.warped = cut_out(raw, session, max_side=2000)
+                im, rotated = make_portrait(im)
+                if rotated:
+                    ph.note.append("横向きだったので回転")
+                ph.isbn = read_isbn(im)
+                # 保存サイズに縮めてから持っておく（大量の写真でもメモリを食わない）
+                if im.height > args.height:
+                    im = im.resize((round(im.width * args.height / im.height), args.height), Image.LANCZOS)
+                ph.image = im
+                print(f"{'台形補正' if ph.warped else '切り抜き'}{'  バーコード ' + ph.isbn if ph.isbn else ''}", flush=True)
+            except Exception as e:
+                print(f"失敗：{e} → inbox/_failed へ", flush=True)
+                fail_dir.mkdir(exist_ok=True)
+                shutil.move(str(p), fail_dir / p.name)
+                continue
+            buf.append(ph)
+            drain(final=False)
+            gc.collect()
+        drain(final=True)
+    except KeyboardInterrupt:
+        print("\n\n中断しました。ここまでの本は保存済みです。未処理の写真は inbox に残っています。")
+
+    print(f"\n{len(added)}冊を data/books.csv に追加しました。")
+    warned = [(r, w) for r, w in added if w]
+    if warned:
+        print("確認が必要な本：")
+        for r, w in warned:
+            print(f"  {r['id']}  {r.get('title') or '（書名未入力）'}   ※{'・'.join(w)}")
     print("\n次は data/books.csv を開いて、price（値段）と category を入れてください。"
           "\n値段が空の本はサイトに出ません。")
     return 0

@@ -11,8 +11,13 @@
 4. 処理済みの元写真は inbox/_done/ に移る
 
 仕組み:
-- 背景の切り抜きは rembg（AIの背景除去）で行い、本の四隅を見つけて
+- 切り抜きはAIを使わない自前の処理です（tools/book_cutout.py）。
+  「本は長方形・本の縦横比・縦向き」を前提に本の四隅を見つけ、
   台形のゆがみを真っすぐに直します（真上から撮っていなくても長方形に整う）。
+
+ほかの使い方:
+    --redo   inbox/_done・_failed の写真も含めて全部作り直す（CSVの書名・値段などはそのまま）
+    --check  切り抜く場所を緑の枠で描いた確認用画像を inbox/_check/ に作るだけ
 - 裏表紙のバーコード（978…）を読み取って ISBN を取り、
   openBD → 国立国会図書館サーチ → Google Books の順に書名・著者・出版社を調べます。
 - Cコード（例 C0232）が分かればカテゴリと判型（文庫・新書・単行本）も自動で入れます。
@@ -35,9 +40,6 @@ from datetime import datetime
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-if __name__ == "__main__":
-    print("準備中…（AIの読み込みに1〜2分かかることがあります）", flush=True)
-
 import numpy as np
 from PIL import Image, ImageOps
 
@@ -50,7 +52,8 @@ except ImportError:
 
 import cv2
 import zxingcpp
-from rembg import new_session, remove
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from book_cutout import cut_out, debug_overlay  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTS = {".jpg", ".jpeg", ".png", ".heic", ".heif", ".webp", ".tif", ".tiff"}
@@ -86,7 +89,6 @@ class Photo:
     taken: float
     image: Image.Image | None = None   # 切り抜き後
     isbn: str = ""
-    warped: bool = False
     note: list[str] = field(default_factory=list)
 
 
@@ -101,61 +103,6 @@ def taken_time(path: Path) -> float:
     except Exception:
         pass
     return path.stat().st_mtime
-
-
-def order_corners(pts: np.ndarray) -> np.ndarray:
-    s, d = pts.sum(1), np.diff(pts, axis=1).ravel()
-    return np.array([pts[s.argmin()], pts[d.argmin()], pts[s.argmax()], pts[d.argmax()]], dtype=np.float32)
-
-
-def cut_out(img: Image.Image, session, max_side: int) -> tuple[Image.Image, bool]:
-    """背景を消し、本が四角く見つかればゆがみを直した長方形で返す。"""
-    img = ImageOps.exif_transpose(img).convert("RGB")
-    if max(img.size) > max_side:
-        img.thumbnail((max_side, max_side), Image.LANCZOS)
-
-    mask = np.array(remove(img, session=session, only_mask=True, post_process_mask=True))
-    _, binm = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
-    binm = cv2.morphologyEx(binm, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
-    contours, _ = cv2.findContours(binm, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
-        raise RuntimeError("本が見つかりませんでした")
-    c = max(contours, key=cv2.contourArea)
-    area = cv2.contourArea(c)
-    if area < 0.05 * mask.size:
-        raise RuntimeError("本が小さすぎるか、見つかりませんでした")
-
-    # 四隅を探す：輪郭を多角形に近似して4点になれば台形補正
-    quad = None
-    peri = cv2.arcLength(c, True)
-    for eps in (0.01, 0.02, 0.03, 0.04, 0.05):
-        approx = cv2.approxPolyDP(c, eps * peri, True)
-        if len(approx) == 4 and cv2.isContourConvex(approx):
-            quad = approx.reshape(4, 2).astype(np.float32)
-            break
-    if quad is not None and cv2.contourArea(quad) / area > 0.92:
-        tl, tr, br, bl = order_corners(quad)
-        w = int(round(max(np.linalg.norm(tr - tl), np.linalg.norm(br - bl))))
-        h = int(round(max(np.linalg.norm(bl - tl), np.linalg.norm(br - tr))))
-        M = cv2.getPerspectiveTransform(np.array([tl, tr, br, bl]),
-                                        np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], dtype=np.float32))
-        rgb = cv2.warpPerspective(np.array(img), M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
-        # 端の1%を落として背景の残りを消す
-        m = max(2, int(min(w, h) * 0.008))
-        out = Image.fromarray(rgb[m:h - m, m:w - m]).convert("RGBA")
-        return out, True
-
-    # 四角にならない（帯付き・角が折れている等）ときは、AIの切り抜きをそのまま使う
-    rgba = img.convert("RGBA")
-    rgba.putalpha(Image.fromarray(mask))
-    x, y, w, h = cv2.boundingRect(c)
-    return rgba.crop((x, y, x + w, y + h)), False
-
-
-def make_portrait(im: Image.Image) -> tuple[Image.Image, bool]:
-    if im.width > im.height * 1.05:
-        return im.rotate(90, expand=True), True
-    return im, False
 
 
 def read_isbn(im: Image.Image) -> str:
@@ -336,14 +283,26 @@ def main() -> int:
     ap.add_argument("--inbox", default=str(ROOT / "inbox"))
     ap.add_argument("--images", default=str(ROOT / "images"))
     ap.add_argument("--csv", default=str(ROOT / "data" / "books.csv"))
-    ap.add_argument("--model", default="isnet-general-use", help="rembg のモデル名（軽くしたいときは u2netp）")
     ap.add_argument("--height", type=int, default=900, help="保存する画像の高さ(px)")
     ap.add_argument("--no-lookup", action="store_true", help="書誌情報をネットで調べない")
     ap.add_argument("--keep", action="store_true", help="処理済みの写真を _done に移さない")
+    ap.add_argument("--redo", action="store_true", help="_done・_failed の写真も含めて切り抜きを全部作り直す")
+    ap.add_argument("--check", action="store_true", help="切り抜く場所を描いた確認用画像を inbox/_check に作るだけ")
     args = ap.parse_args()
 
     inbox, images, csv_path = Path(args.inbox), Path(args.images), Path(args.csv)
-    files = [p for p in inbox.iterdir() if p.is_file() and p.suffix.lower() in EXTS and not p.name.startswith(".")]
+    folders = [inbox] + ([inbox / "_done", inbox / "_failed"] if (args.redo or args.check) else [])
+    files = [p for d in folders if d.is_dir() for p in d.iterdir()
+             if p.is_file() and p.suffix.lower() in EXTS and not p.name.startswith(".")]
+    if args.check:
+        out = inbox / "_check"
+        out.mkdir(exist_ok=True)
+        for n, p in enumerate(sorted(files, key=lambda f: f.name), 1):
+            with Image.open(p) as raw:
+                debug_overlay(raw, str(out / (p.stem + ".jpg")))
+            print(f"  [{n}/{len(files)}] {p.name}", flush=True)
+        print(f"\n確認用の画像を {out} に作りました。緑の枠が本からずれている写真を教えてください。")
+        return 0
     if not files:
         print(f"写真がありません：{inbox} に入れてから実行してください。")
         return 0
@@ -353,31 +312,45 @@ def main() -> int:
     done_dir = inbox / "_done"
     fail_dir = inbox / "_failed"
 
-    print(f"{len(files)}枚の写真を処理します（初回はAIモデルのダウンロードで少し待ちます）", flush=True)
-    print("途中で止めても、そこまでの本は保存されます。もう一度実行すると続きから処理します。\n", flush=True)
-    session = new_session(args.model)
+    print(f"{len(files)}枚の写真を処理します", flush=True)
+    if args.redo:
+        print("作り直しモード：CSVの書名・値段などは残し、写真だけ新しくします。\n", flush=True)
+    else:
+        print("途中で止めても、そこまでの本は保存されます。もう一度実行すると続きから処理します。\n", flush=True)
 
     rows = read_csv(csv_path)
-    ids = {r.get("id", "") for r in rows}
+    by_id = {r.get("id", ""): r for r in rows}
+    ids = set() if args.redo else set(by_id)   # 作り直しでは、前と同じIDを使い回す
+    touched: set[str] = set()
     added: list[tuple[dict, list[str]]] = []
 
     def emit(front: Photo, back: Photo | None) -> None:
         """1冊ぶんを保存し、CSVにすぐ書き込み、元写真を _done へ移す。"""
         isbn = (back.isbn if back else "") or front.isbn
-        info = {}
-        if isbn and not args.no_lookup:
-            info = lookup(isbn)
-            time.sleep(0.3)
         bid = new_id(isbn or f"b-{front.path.stem}", ids)
         ids.add(bid)
+        touched.add(bid)
+        old = by_id.get(bid) if args.redo else None
+        info = {}
+        if isbn and not args.no_lookup and not (old and old.get("title")):
+            info = lookup(isbn)
+            time.sleep(0.3)
         save_webp(front.image, images / f"{bid}-front.webp", args.height)
         bpath = ""
         if back:
             save_webp(back.image, images / f"{bid}-back.webp", args.height)
             bpath = f"images/{bid}-back.webp"
-        row = {"id": bid, "isbn": isbn, "front": f"images/{bid}-front.webp", "back": bpath,
-               "price": "", "sold": "", "sample": "", "condition": "", **info}
-        rows.append(row)
+        if old is not None:            # 作り直し：書名・値段などはそのまま、写真だけ差し替え
+            old.update({"front": f"images/{bid}-front.webp", "back": bpath})
+            for k, v in info.items():
+                if v and not old.get(k):
+                    old[k] = v
+            row = old
+        else:
+            row = {"id": bid, "isbn": isbn, "front": f"images/{bid}-front.webp", "back": bpath,
+                   "price": "", "sold": "", "sample": "", "condition": "", **info}
+            rows.append(row)
+            by_id[bid] = row
         write_csv(csv_path, rows)      # 1冊ごとに保存（途中で止まっても失われない）
 
         warn = []
@@ -397,7 +370,9 @@ def main() -> int:
             done_dir.mkdir(exist_ok=True)
             for ph in (front, back):
                 if ph:
-                    shutil.move(str(ph.path), done_dir / ph.path.name)
+                    dst = done_dir / ph.path.name
+                    if ph.path.resolve() != dst.resolve():
+                        shutil.move(str(ph.path), dst)
         for ph in (front, back):       # メモリを空ける
             if ph:
                 ph.image = None
@@ -419,16 +394,15 @@ def main() -> int:
             ph = Photo(p, taken_time(p))
             try:
                 with Image.open(p) as raw:
-                    im, ph.warped = cut_out(raw, session, max_side=2000)
-                im, rotated = make_portrait(im)
-                if rotated:
-                    ph.note.append("横向きだったので回転")
+                    im, how, found = cut_out(raw, max_side=2000)
+                if not found:
+                    ph.note.append("本の輪郭が取れず写真をそのまま使用")
                 ph.isbn = read_isbn(im)
                 # 保存サイズに縮めてから持っておく（大量の写真でもメモリを食わない）
                 if im.height > args.height:
                     im = im.resize((round(im.width * args.height / im.height), args.height), Image.LANCZOS)
                 ph.image = im
-                print(f"{'台形補正' if ph.warped else '切り抜き'}{'  バーコード ' + ph.isbn if ph.isbn else ''}", flush=True)
+                print(f"{how}{'  バーコード ' + ph.isbn if ph.isbn else ''}", flush=True)
             except Exception as e:
                 print(f"失敗：{e} → inbox/_failed へ", flush=True)
                 fail_dir.mkdir(exist_ok=True)
@@ -441,7 +415,15 @@ def main() -> int:
     except KeyboardInterrupt:
         print("\n\n中断しました。ここまでの本は保存済みです。未処理の写真は inbox に残っています。")
 
-    print(f"\n{len(added)}冊を data/books.csv に追加しました。")
+    if args.redo:
+        print(f"\n{len(added)}冊の写真を作り直しました。")
+        left = [r for r in rows if r.get("id") not in touched and (r.get("front") or r.get("back"))]
+        if left:
+            print("写真から作り直されなかった本（組み合わせが変わった可能性があります。不要なら行ごと消してください）：")
+            for r in left:
+                print(f"  {r['id']}  {r.get('title') or '（書名未入力）'}")
+    else:
+        print(f"\n{len(added)}冊を data/books.csv に追加しました。")
     warned = [(r, w) for r, w in added if w]
     if warned:
         print("確認が必要な本：")

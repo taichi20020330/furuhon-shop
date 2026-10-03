@@ -304,7 +304,7 @@ def snap_quad(q: np.ndarray, grad: np.ndarray, noise: float) -> np.ndarray:
     return q if np.max(np.linalg.norm(new - q, axis=1)) > 4 * R else new
 
 
-STRAIGHT_DEG = 7.0       # これ以下の傾きなら補正しない
+WARP_MAX_DEG = 10.0      # 台形補正をかけるのは、辺の傾きがこの角度までのとき（それ以上は検出の間違いとみなす）
 
 
 def max_tilt_deg(q: np.ndarray) -> float:
@@ -591,13 +591,21 @@ def cut_out(img: Image.Image, max_side: int = 2000) -> tuple[Image.Image, str, b
         return Image.fromarray(full).convert("RGBA"), "本が見つからず写真をそのまま使用", False, ""
 
     q = order_corners(best["pts"] / sc)
-    # 写真はどれもまっすぐに撮られている前提なので、台形補正はしない。
-    # 検出した四角形がほんの少しずれても画像がゆがまないよう、四角く切り出すだけにする。
-    H, W = full.shape[:2]
+    # 写真は上から、ほぼまっすぐ撮られている前提。検出した四角形の「少しのズレ」だけを台形補正で直す。
+    # 大きく傾いた四角形は、検出の間違いの可能性が高いので補正せず、四角く切り出すだけにする
+    # （間違った四角形に合わせて引き伸ばすと、画像が斜めにゆがむため）。
+    tilt = max_tilt_deg(q)
     e = order_corners(_expand(q, PAD))
-    x0, x1 = int(max(0, np.floor(e[:, 0].min()))), int(min(W, np.ceil(e[:, 0].max())))
-    y0, y1 = int(max(0, np.floor(e[:, 1].min()))), int(min(H, np.ceil(e[:, 1].max())))
-    rect = full[y0:y1, x0:x1]
+    if 0.3 < tilt <= WARP_MAX_DEG and shape_ok(q):
+        rect = _warp(full, e)
+        note = (note + "・" if note else "") + f"ズレ{tilt:.1f}度を補正"
+    else:
+        H, W = full.shape[:2]
+        x0, x1 = int(max(0, np.floor(e[:, 0].min()))), int(min(W, np.ceil(e[:, 0].max())))
+        y0, y1 = int(max(0, np.floor(e[:, 1].min()))), int(min(H, np.ceil(e[:, 1].max())))
+        rect = full[y0:y1, x0:x1]
+        if tilt > WARP_MAX_DEG:
+            note = (note + "・" if note else "") + "傾きが大きいため補正せず"
     rect = _trim_background(rect, best["centers"])
     warn = ""
     if best["clipped"]:

@@ -36,7 +36,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* ---------- 書籍空間 ---------- */
-#stage { position: fixed; inset: 0; touch-action: none; cursor: grab; }
+#stage { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; position: fixed; inset: 0; touch-action: none; cursor: grab; }
 #stage.dragging { cursor: grabbing; }
 #world { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; }
 
@@ -179,6 +179,27 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .zoom button { width: 36px; height: 36px; border-radius: 50%; border: 1px solid var(--hair); background: var(--paper); cursor: pointer; font-size: 18px; line-height: 1; }
 
 /* ---------- 注文シート ---------- */
+/* 拡大表示（長押し・ランダム） */
+.zveil { position: fixed; inset: 0; z-index: 45; display: grid; place-items: center; padding: 20px; background: rgba(35,38,43,.42); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); animation: zfade .2s ease-out; }
+.zveil[hidden] { display: none !important; }
+@keyframes zfade { from { opacity: 0; } }
+.zcard { width: min(440px, 100%); max-height: 100%; overflow: auto; background: var(--paper); border-radius: 18px; padding: 18px 18px 16px; box-shadow: 0 24px 60px rgba(30,32,38,.28); text-align: center; animation: zpop .28s cubic-bezier(.3,.8,.3,1); }
+@keyframes zpop { from { transform: scale(.94) translateY(8px); opacity: 0; } }
+.zflip { perspective: 1400px; height: min(58vh, 520px); aspect-ratio: var(--ar, .66); max-width: 100%; margin: 0 auto 14px; cursor: pointer; }
+.zflipper { position: relative; width: 100%; height: 100%; transform-style: preserve-3d; transition: transform .6s cubic-bezier(.3,.7,.2,1); }
+.zflipper.back { transform: rotateY(180deg); }
+.zface { position: absolute; inset: 0; backface-visibility: hidden; -webkit-backface-visibility: hidden; filter: drop-shadow(0 8px 16px rgba(30,32,38,.18)); }
+.zface.zb { transform: rotateY(180deg); }
+.zface img { width: 100%; height: 100%; object-fit: contain; display: block; -webkit-user-drag: none; }
+.zface .cover { width: 100%; height: 100%; }
+.zcard h3 { margin: 0 0 2px; font-family: var(--f-display); font-size: 18px; letter-spacing: .04em; line-height: 1.4; }
+.zcard p { margin: 0 0 4px; font-size: 12.5px; color: var(--ink-soft); }
+.zcard .zmeta { margin: 8px 0 12px; font-size: 13px; }
+.zcard .zmeta b { font-size: 20px; margin-left: 8px; }
+.zcard .zhelp { font-size: 11px; color: var(--ink-soft); margin: 0 0 10px; }
+.zrow { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+.zrow .btn { min-width: 110px; }
+
 .veil { position: fixed; inset: 0; background: rgba(35,38,43,.28); z-index: 40; display: grid; place-items: end center; }
 .sheet {
   width: min(560px, 100%); max-height: 88%; overflow-y: auto; box-sizing: border-box;
@@ -230,7 +251,7 @@ pre.preview { text-align: left; white-space: pre-wrap; font-size: 12px; backgrou
 <header class="top">
   <div class="head">
     <h1 class="brand" id="shopName">浮かぶ古本屋</h1>
-    <span class="hint">ドラッグで移動・本をタップで裏返す・＋で選ぶ</span>
+    <span class="hint">ドラッグで移動・タップで裏返す・長押しで拡大・＋で選ぶ</span>
   </div>
   <div class="searchrow">
     <label class="search" for="q">
@@ -249,6 +270,9 @@ pre.preview { text-align: left; white-space: pre-wrap; font-size: 12px; backgrou
 </header>
 
 <div class="zoom">
+  <button id="rnd" aria-label="ランダムに1冊見る" title="ランダムに1冊">
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3.5"/><circle cx="9" cy="9" r="1" fill="currentColor"/><circle cx="15" cy="15" r="1" fill="currentColor"/><circle cx="15" cy="9" r="1" fill="currentColor"/><circle cx="9" cy="15" r="1" fill="currentColor"/></svg>
+  </button>
   <button id="zin" aria-label="拡大">＋</button>
   <button id="zout" aria-label="縮小">−</button>
 </div>
@@ -260,6 +284,10 @@ pre.preview { text-align: left; white-space: pre-wrap; font-size: 12px; backgrou
     <div class="tray-sum" id="traySum" hidden><b id="trayCount">0</b>冊 ・ <b id="trayTotal">¥0</b></div>
     <button class="btn" id="openOrder" disabled>取り置きを頼む</button>
   </div>
+</div>
+
+<div class="zveil" id="zveil" hidden>
+  <div class="zcard" role="dialog" aria-modal="true" aria-labelledby="zTitle" id="zcard"></div>
 </div>
 
 <div class="veil" id="veil" hidden>
@@ -446,9 +474,21 @@ function zoomAt(cx, cy, factor) {
 }
 
 const pointers = new Map();
-let drag = null, pinch = null, moved = false;
+let drag = null, pinch = null, moved = false, pressTimer = null, longFired = false;
+const LONG_MS = 480;
+const cancelPress = () => { clearTimeout(pressTimer); pressTimer = null; };
+stage.addEventListener("contextmenu", e => e.preventDefault());
 stage.addEventListener("pointerdown", e => {
   if (e.target.closest("button, .info")) return;
+  longFired = false; cancelPress();
+  const hitBook = (document.elementFromPoint(e.clientX, e.clientY) || e.target).closest?.(".flip");
+  if (hitBook && e.isPrimary) {
+    const id = hitBook.closest(".book").dataset.id;
+    pressTimer = setTimeout(() => {
+      if (moved || pointers.size !== 1) return;
+      longFired = true; drag = null; showZoom(id);
+    }, LONG_MS);
+  }
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   stage.setPointerCapture(e.pointerId);
   if (pointers.size === 1) { drag = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y }; moved = false; }
@@ -466,17 +506,18 @@ stage.addEventListener("pointermove", e => {
     zoomAt(mx, my, clampS(pinch.s * Math.hypot(a.x - b.x, a.y - b.y) / pinch.d) / view.s);
   } else if (drag) {
     const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
-    if (Math.abs(dx) + Math.abs(dy) > 6) { moved = true; stage.classList.add("dragging"); }
+    if (Math.abs(dx) + Math.abs(dy) > 6) { moved = true; cancelPress(); stage.classList.add("dragging"); }
     if (moved) { view.x = drag.vx + dx; view.y = drag.vy + dy; apply(); }
   }
 });
 const endPointer = e => {
   if (!pointers.has(e.pointerId)) return;
+  cancelPress();
   pointers.delete(e.pointerId);
   if (pointers.size < 2) pinch = null;
   if (pointers.size === 0) {
     stage.classList.remove("dragging");
-    if (drag && !moved) handleTap(e);
+    if (drag && !moved && !longFired) handleTap(e);
     drag = null;
   }
 };
@@ -489,6 +530,61 @@ stage.addEventListener("wheel", e => {
 }, { passive: false });
 document.getElementById("zin").onclick = () => zoomAt(innerWidth / 2, innerHeight / 2, 1.2);
 document.getElementById("zout").onclick = () => zoomAt(innerWidth / 2, innerHeight / 2, 1 / 1.2);
+
+/* ---------- 拡大表示（長押し）とランダム ---------- */
+const zveil = document.getElementById("zveil"), zcard = document.getElementById("zcard");
+let zId = null, zRandom = false, lastRandomId = null;
+function showZoom(id, fromRandom = false) {
+  const b = BOOKS.find(x => x.id === id);
+  if (!b) return;
+  zId = id; zRandom = fromRandom; closeAll();
+  const el = bookEls.get(id);
+  const ar = (el && parseFloat(getComputedStyle(el).getPropertyValue("--ar"))) || (FORMAT[b.format] || FORMAT.bunko).ar;
+  const face = (src, alt, side) => src ? `<img src="${esc(src)}" alt="${esc(alt)}" draggable="false">` : coverHTML(b, side);
+  zcard.innerHTML = `
+    <div class="zflip" style="--ar:${ar}" id="zflip" role="button" tabindex="0" aria-label="タップで裏返す">
+      <div class="zflipper" id="zflipper">
+        <div class="zface">${face(b.front, b.title + "の表紙", "front")}</div>
+        <div class="zface zb">${face(b.back, b.title + "の裏表紙", "back")}</div>
+      </div>
+    </div>
+    <h3 id="zTitle">${esc(b.title)}</h3>
+    <p>${esc(b.author)}${b.author && b.publisher ? " ／ " : ""}${esc(b.publisher)}${b.label ? "・" + esc(b.label) : ""}</p>
+    ${b.condition ? `<p>状態：${esc(b.condition)}</p>` : ""}
+    <div class="zmeta">${b.sold ? "売約済" : `古書価<b>${yen(b.price)}</b>`}</div>
+    <p class="zhelp">表紙をタップすると裏返ります</p>
+    <div class="zrow">
+      ${b.sold ? "" : `<button class="btn" id="zpick">${picked.has(id) ? "選択をやめる" : "選ぶ"}</button>`}
+      ${fromRandom ? `<button class="btn ghost" id="zagain">もう1冊</button>` : ""}
+      <button class="btn ghost" id="zclose">閉じる</button>
+    </div>`;
+  zveil.hidden = false;
+  const flip = () => document.getElementById("zflipper").classList.toggle("back");
+  document.getElementById("zflip").onclick = flip;
+  document.getElementById("zflip").onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); flip(); } };
+  document.getElementById("zclose").onclick = closeZoom;
+  const pk = document.getElementById("zpick");
+  if (pk) pk.onclick = () => { togglePick(id); pk.textContent = picked.has(id) ? "選択をやめる" : "選ぶ"; };
+  const again = document.getElementById("zagain");
+  if (again) again.onclick = () => randomBook();
+  document.getElementById("zclose").focus({ preventScroll: true });
+}
+function closeZoom() { zveil.hidden = true; zId = null; }
+zveil.addEventListener("click", e => { if (e.target === zveil) closeZoom(); });
+addEventListener("keydown", e => { if (e.key === "Escape" && !zveil.hidden) closeZoom(); });
+
+function randomBook() {
+  // いま絞り込み中なら、その中から。売約済は除く
+  const pool = BOOKS.filter(b => !b.sold && !(bookEls.get(b.id) || {}).classList?.contains("dim"));
+  if (!pool.length) return;
+  let b;
+  do { b = pool[Math.floor(Math.random() * pool.length)]; } while (pool.length > 1 && b.id === lastRandomId);
+  lastRandomId = b.id;
+  closeZoom();
+  centerOn(b._x, b._y, Math.max(view.s, innerWidth < 600 ? 0.9 : 1.0));
+  showZoom(b.id, true);
+}
+document.getElementById("rnd").onclick = randomBook;
 
 /* ---------- 裏返す・選ぶ ---------- */
 function handleTap(e) {

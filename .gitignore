@@ -1,0 +1,7 @@
+# 元写真はリポジトリに入れない（重いので）
+inbox/*
+!inbox/.gitkeep
+.venv/
+__pycache__/
+*.tmp
+.DS_Store

@@ -1,0 +1,6 @@
+rembg[cpu]>=2.0.57
+opencv-python-headless>=4.8
+zxing-cpp>=2.2
+pillow>=10.0
+pillow-heif>=0.16
+numpy

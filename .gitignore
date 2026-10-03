@@ -5,3 +5,4 @@ inbox/*
 __pycache__/
 *.tmp
 .DS_Store
+処理ログ.txt

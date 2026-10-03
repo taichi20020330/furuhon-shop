@@ -5,5 +5,5 @@ if [ ! -d .venv ]; then
   echo "初回セットアップ中（数分かかります）…"
   python3 -m venv .venv && .venv/bin/pip install -q -r tools/requirements.txt || { echo "セットアップに失敗しました。python3 が入っているか確認してください。"; read -n1; exit 1; }
 fi
-.venv/bin/python tools/process_photos.py --redo "$@"
+.venv/bin/python tools/process_photos.py --redo "$@" 2>&1 | tee 処理ログ.txt
 echo ""; echo "何かキーを押すと閉じます"; read -n1

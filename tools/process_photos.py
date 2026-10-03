@@ -429,11 +429,18 @@ def main() -> int:
 
     if args.redo:
         print(f"\n{len(added)}冊の写真を作り直しました。")
-        left = [r for r in rows if r.get("id") not in touched and (r.get("front") or r.get("back"))]
+        # 作り直しで画像ができなかった行は、前の実行の残り（IDが変わった・重複して増えた行）なので、
+        # CSVから外して data/books_removed_no_image.csv に取っておく（写真がない本が空の表紙で並ぶのを防ぐ）
+        left = [r for r in rows if r.get("id") not in touched]
         if left:
-            print("写真から作り直されなかった本（組み合わせが変わった可能性があります。不要なら行ごと消してください）：")
-            for r in left:
-                print(f"  {r['id']}  {r.get('title') or '（書名未入力）'}")
+            with open(csv_path.with_name("books_removed_no_image.csv"), "w", encoding="utf-8-sig", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=FIELDS)
+                w.writeheader()
+                w.writerows({k: r.get(k, "") for k in FIELDS} for r in left)
+            keep = [r for r in rows if r.get("id") in touched]
+            write_csv(csv_path, keep)
+            print(f"前の実行の残りで、今回の写真から作り直されなかった行 {len(left)} 件を CSV から外しました"
+                  "（data/books_removed_no_image.csv に保存）。")
     else:
         print(f"\n{len(added)}冊を data/books.csv に追加しました。")
     warned = [(r, w) for r, w in added if w]

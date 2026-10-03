@@ -30,6 +30,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageOps
 
+DEBUG = bool(os.environ.get('BOOK_DEBUG2'))
 WORK = 900                      # 本を探すときの作業サイズ(px)
 ASPECT_MIN, ASPECT_MAX = 0.50, 0.88   # 本の縦横比（横÷縦）
 GOOD_ENOUGH = 5.4               # この点数を超えたら、残りの探し方は省略
@@ -303,6 +304,117 @@ def snap_quad(q: np.ndarray, grad: np.ndarray, noise: float) -> np.ndarray:
     return q if np.max(np.linalg.norm(new - q, axis=1)) > 4 * R else new
 
 
+def shape_ok(q: np.ndarray) -> bool:
+    """本の輪郭として無理のない四角形か（角が直角に近く、向かい合う辺の長さが極端に違わない）。"""
+    q = order_corners(q)
+    L = [float(np.linalg.norm(q[(i + 1) % 4] - q[i])) for i in range(4)]
+    if min(L) < 1e-3:
+        return False
+    if not (0.55 <= L[0] / L[2] <= 1.8 and 0.55 <= L[1] / L[3] <= 1.8):
+        return False
+    for i in range(4):
+        a, b = q[i - 1] - q[i], q[(i + 1) % 4] - q[i]
+        cosv = float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9))
+        if not (-0.42 <= cosv <= 0.42):          # 約65〜115度
+            return False
+    return True
+
+
+def tighten_quad(q: np.ndarray, grad: np.ndarray, lab: np.ndarray, noise: float) -> np.ndarray:
+    """四角形が机の面（背景の余り）まで含んでしまっているとき、各辺を内側のはっきりした境目まで寄せる。
+    辺は平行移動だけでなく少し傾けて探す（写真の遠近で、向かい合う辺が平行にならないため）。
+    寄せるのは「辺の上は弱い線・内側にくっきり長い線・間の帯が外側の色に近い」ときだけ。"""
+    h, w = grad.shape
+    q = order_corners(q)
+    center = q.mean(axis=0)
+    t = np.linspace(0.08, 0.92, 48, dtype=np.float32)[:, None]
+    span = int(0.25 * min(h, w))
+    angles = np.deg2rad(np.arange(-14, 14.1, 2.0))
+    lines = []
+    for i in range(4):
+        p0, p1 = q[i], q[(i + 1) % 4]
+        d = p1 - p0
+        L = float(np.linalg.norm(d))
+        n = np.array([-d[1], d[0]], np.float32) / max(1e-3, L)
+        if np.dot((p0 + p1) / 2 - center, n) < 0:
+            n = -n
+        mid = (p0 + p1) / 2
+
+        def frame(a, th):
+            c, s_ = np.cos(th), np.sin(th)
+            dr = np.array([c * d[0] - s_ * d[1], s_ * d[0] + c * d[1]], np.float32)
+            nr = np.array([c * n[0] - s_ * n[1], s_ * n[0] + c * n[1]], np.float32)
+            return mid - n * a, dr, nr
+
+        def line_strength(a, th):
+            m, dr, nr = frame(a, th)
+            pts = m + dr * (t - 0.5)
+            best = np.zeros(len(t), np.float32)
+            for j in (-1, 0, 1):
+                xs = np.clip(np.round(pts[:, 0] + nr[0] * j).astype(int), 0, w - 1)
+                ys = np.clip(np.round(pts[:, 1] + nr[1] * j).astype(int), 0, h - 1)
+                best = np.maximum(best, grad[ys, xs])
+            return float(np.percentile(best, 25))      # 辺の大部分で強い線だけ
+
+        offs = np.arange(0, span + 1)
+        st = np.array([[line_strength(a, th) for a in offs] for th in angles])   # [角度, 位置]
+        th0 = len(angles) // 2
+        here = float(st[th0, :4].max())
+        inner = st[:, 4:]
+        peak = float(inner.max()) if inner.size else 0.0
+        chosen = None
+        if DEBUG:
+            print('side', i, 'here', round(here, 1), 'peak', round(peak, 1), 'noise', round(noise, 1))
+        if peak >= 1.7 * max(here, noise * 0.9) and peak >= 2.0 * noise:
+            cands = []
+            for ti in range(len(angles)):
+                for a in offs[4:]:
+                    v = st[ti, a]
+                    if v >= 0.6 * peak and v >= st[ti, a - 1] and v >= st[ti, min(len(offs) - 1, a + 1)]:
+                        cands.append((int(a), -float(v), ti))
+            if cands:
+                a, _, ti = min(cands)                   # いちばん外側（同じなら強い方）
+                if a >= 6:
+                    m, dr, nr = frame(a, angles[ti])
+
+                    def band(a0, a1):
+                        ps = []
+                        for u in np.linspace(0.15, 0.85, 12):
+                            for aa in np.linspace(a0, a1, 4):
+                                x, y = (mid - n * aa) + (dr * (u - 0.5)) if False else (m + dr * (u - 0.5) + nr * (a - aa))
+                                xi, yi = int(round(x)), int(round(y))
+                                if 0 <= xi < w and 0 <= yi < h:
+                                    ps.append(lab[yi, xi])
+                        return np.median(np.array(ps), axis=0) if len(ps) >= 8 else None
+                    strip = band(a - 2, 2)       # 元の辺と新しい線の間
+                    inside = band(-2, -10)       # 新しい線の内側
+                    outside = None
+                    po = np.array([mid + n * 9])
+                    ps = []
+                    for u in np.linspace(-0.4, 0.4, 12):
+                        for k in (5, 9, 13):
+                            x, y = mid + d * u + n * k
+                            xi, yi = int(round(x)), int(round(y))
+                            if 0 <= xi < w and 0 <= yi < h:
+                                ps.append(lab[yi, xi])
+                    if len(ps) >= 8:
+                        outside = np.median(np.array(ps), axis=0)
+                    good = strip is not None and inside is not None
+                    if good and outside is not None:
+                        good = np.linalg.norm(strip - outside) < 0.7 * np.linalg.norm(strip - inside)
+                    if good:
+                        chosen = (m, dr)
+        if chosen is None:
+            lines.append((p0, p1))
+        else:
+            m, dr = chosen
+            lines.append((m - dr / 2, m + dr / 2))
+    corners = [_line_intersect(lines[(i - 1) % 4], lines[i]) for i in range(4)]
+    if any(c is None for c in corners):
+        return q
+    return order_corners(corners)
+
+
 # ------------------------------------------------------------ 本を探す
 
 def find_book(rgb: np.ndarray) -> dict | None:
@@ -329,7 +441,7 @@ def find_book(rgb: np.ndarray) -> dict | None:
             for hull in gen():
                 q = fit_enclosing_quad(hull)
                 s = score_quad(q, grad, g_ref, lab, centers, noise)
-                if s["score"] > 0:
+                if s["score"] > 0 and shape_ok(q):
                     cands.append({**s, "pts": q, "source": name, "hull": hull})
         except cv2.error:
             continue
@@ -345,6 +457,11 @@ def find_book(rgb: np.ndarray) -> dict | None:
             and ASPECT_MIN - 0.05 <= c["aspect"] <= ASPECT_MAX + 0.05]
     best = max(near, key=lambda c: c["frac"]) if near else max(cands, key=lambda c: c["score"])
 
+    tight = tighten_quad(best["pts"], grad, lab, noise)
+    if np.max(np.linalg.norm(tight - order_corners(best["pts"]), axis=1)) > 3:
+        st = score_quad(tight, grad, g_ref, lab, centers, noise)
+        if shape_ok(tight) and st["score"] >= best["score"] - 0.3 and ASPECT_MIN - 0.05 <= st["aspect"] <= ASPECT_MAX + 0.05:
+            best.update(st, pts=tight)
     snapped = snap_quad(best["pts"], grad, noise)
     s2 = score_quad(snapped, grad, g_ref, lab, centers, noise)
     if s2["score"] >= best["score"] - 0.3:
@@ -426,11 +543,33 @@ def cut_out(img: Image.Image, max_side: int = 2000) -> tuple[Image.Image, str, b
     if max(img.size) > max_side:
         img.thumbnail((max_side, max_side), Image.LANCZOS)
     full = np.array(img)
-    H, W = full.shape[:2]
-    sc = WORK / max(H, W)
-    small = cv2.resize(full, (int(W * sc), int(H * sc)), interpolation=cv2.INTER_AREA)
+    note = ""
 
-    best = find_book(small)
+    def look(arr):
+        H, W = arr.shape[:2]
+        sc = WORK / max(H, W)
+        small = cv2.resize(arr, (int(W * sc), int(H * sc)), interpolation=cv2.INTER_AREA)
+        return sc, find_book(small)
+
+    def valid(b):
+        return (b is not None and b["score"] >= MIN_SCORE
+                and ASPECT_MIN - 0.05 <= b["aspect"] <= ASPECT_MAX + 0.05)
+
+    sc, best = look(full)
+    if not valid(best):
+        # 本が横倒しに写っているのかもしれない。縦向きで見つからないときだけ、回した向きも試す
+        # （これまでの写真では、横倒しはどれも「本の上が右」＝左に90度回すと正しい向きだったので、左回しを優先）
+        tries = []
+        for k, label in ((1, "左に90度回転"), (-1, "右に90度回転")):
+            arr = np.rot90(full, k).copy()
+            sc2, b2 = look(arr)
+            if valid(b2):
+                tries.append((b2["score"], arr, sc2, b2, label))
+                break                      # 左回しで本が見つかれば、それを採用（向きの取り違えを避ける）
+        if tries:
+            _, arr, sc2, b2, label = max(tries, key=lambda x: x[0])
+            if best is None or b2["score"] > best["score"] + 0.5:
+                full, sc, best, note = arr, sc2, b2, "横倒しの写真を" + label
     if os.environ.get("BOOK_DEBUG") and best:
         print(f"[点数 {best['score']:.2f} 輪郭 {best.get('edge', 0):.2f} 外側 {best.get('outside', 0):.2f} "
               f"縦横 {best.get('aspect', 0):.2f} 面積 {best.get('frac', 0):.2f}] ", end="")
@@ -445,7 +584,8 @@ def cut_out(img: Image.Image, max_side: int = 2000) -> tuple[Image.Image, str, b
         warn = "本が写真の端で切れている可能性（撮り直し推奨）"
     elif best["score"] < 4.2:
         warn = "輪郭があまりはっきりしない（切り抜きを目で確認）"
-    return Image.fromarray(rect).convert("RGBA"), f"切り抜き（{best['source']}）", True, warn
+    how = f"切り抜き（{best['source']}）" + (f"・{note}" if note else "")
+    return Image.fromarray(rect).convert("RGBA"), how, True, warn
 
 
 def debug_overlay(img: Image.Image, path: str) -> None:

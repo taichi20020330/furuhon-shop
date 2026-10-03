@@ -12,8 +12,9 @@
 
 仕組み:
 - 切り抜きはAIを使わない自前の処理です（tools/book_cutout.py）。
-  「本は長方形・本の縦横比・縦向き」を前提に本の四隅を見つけ、
+  「本は長方形・本の縦横比・縦向き」を前提に、本の形を求めて「それをすべて含む四角」に当てはめ、
   台形のゆがみを真っすぐに直します（真上から撮っていなくても長方形に整う）。
+  端が切れないことを最優先にしていて、本が写真の端で切れていそうな写真は警告します。
 
 ほかの使い方:
     --redo   inbox/_done・_failed の写真も含めて全部作り直す（CSVの書名・値段などはそのまま）
@@ -394,9 +395,11 @@ def main() -> int:
             ph = Photo(p, taken_time(p))
             try:
                 with Image.open(p) as raw:
-                    im, how, found = cut_out(raw, max_side=2000)
+                    im, how, found, warn = cut_out(raw, max_side=2000)
                 if not found:
                     ph.note.append("本の輪郭が取れず写真をそのまま使用")
+                elif warn:
+                    ph.note.append(warn)
                 ph.isbn = read_isbn(im)
                 # 保存サイズに縮めてから持っておく（大量の写真でもメモリを食わない）
                 if im.height > args.height:

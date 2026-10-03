@@ -1,22 +1,26 @@
 """
-本の写真から、本だけをまっすぐな長方形で切り出す（AIを使わない自前の処理）。
+本の写真から、本だけをまっすぐな長方形で切り出す（AIを使わない自前の処理・第2版）。
 
-前提（これを手がかりにしている）
-  1. 本は長方形である
-  2. 本の形をしている（縦横比がだいたい 0.55〜0.85）
-  3. 縦向きに写っている（縦の方が長い）
-  4. 写真の四辺は机や床（＝背景）で、本は写真の中ほどにある
+前提
+  1. 本は長方形（斜めから撮れば台形に写る）
+  2. 本らしい縦横比（横÷縦 がだいたい 0.5〜0.88）で、縦向きに写っている
+  3. 写真の四辺は机や床で、本は写真の中ほどにある
 
-やっていること
-  1. 写真の四辺の色を「背景の色」として覚え、背景と違う部分を探す（しきい値を何通りか試す）
-  2. 写真の中の「くっきりした境目（輪郭線）」からも四角形を探す
-  3. 出てきた四角形の候補すべてに点数を付けて、いちばん本らしいものを選ぶ
-       - 4辺すべてが、くっきりした境目に重なっているか
-       - すぐ外側が背景の色か（表紙のイラストだけを拾った候補はここで落ちる）
-       - 縦長で、本らしい縦横比か
-       - 大きいか（本の中のイラストより、本そのものの方が大きい）
-  4. 選んだ四角形の各辺を、近くのいちばんくっきりした境目に寄せる
-  5. 4つの角を引き伸ばして、まっすぐな長方形にする（斜めから撮っても台形が直る）
+第1版との違い：「見切れ」（本の端が切れてしまう）を出さないことを最優先にした。
+  - 本の内側にある四角（イラストの枠、文字の囲み、帯）を本と取り違えないよう、
+    本の形（マスク）を求めて、それを「すべて含む」四角を作る
+  - 各辺は「近くでいちばん外側の、はっきりした境目」に合わせる
+    （前は一番くっきりした境目に合わせていたので、内側の線に吸い寄せられていた）
+  - 切り出すときは外側に少し余裕を取り、背景色の残りを内側から削る
+    （削る量には上限があるので、本の中に食い込まない）
+  - 本が写真の端で切れている、輪郭がはっきりしない、などは警告として知らせる
+
+流れ
+  A. 背景色との差・GrabCut・輪郭線から「本の形」の候補を出す（穴は埋める）
+  B. 各候補を「すべて含む四角」に当てはめ、辺が境目に乗っているか・外側が机の色か・
+     本らしい比率か、で採点して選ぶ
+  C. 辺を外側の境目に寄せる
+  D. 外側に余裕を付けて台形補正し、背景の残りを上限付きで削る
 """
 from __future__ import annotations
 
@@ -26,30 +30,41 @@ import cv2
 import numpy as np
 from PIL import Image, ImageOps
 
-WORK = 900                     # 本を探すときの作業サイズ(px)。大きいほど正確で遅い
-ASPECT_MIN, ASPECT_MAX = 0.50, 0.88   # 本の縦横比（横÷縦）の許容範囲
-GOOD_ENOUGH = 5.4              # この点数を超えたら、残りの探し方は省略する
-MIN_SCORE = 3.0                # これ未満なら「見つからず」
-NEAR = 1.2                     # 最高点からこの差までの候補は「同じくらい本らしい」とみなす
+WORK = 900                      # 本を探すときの作業サイズ(px)
+ASPECT_MIN, ASPECT_MAX = 0.50, 0.88   # 本の縦横比（横÷縦）
+GOOD_ENOUGH = 5.4               # この点数を超えたら、残りの探し方は省略
+MIN_SCORE = 3.0                 # これ未満なら「見つからず」
+NEAR = 1.2                      # 最高点からこの差までは「同じくらい本らしい」
+PAD = 0.03                      # 切り出すとき外側に取る余裕（辺の長さに対する割合）
+MAX_TRIM = PAD + 0.012          # 背景の残りを削る量の上限（これ以上は本に食い込まない）
 
 
 # ------------------------------------------------------------ 小道具
 
-def order_corners(pts: np.ndarray) -> np.ndarray:
+def order_corners(pts) -> np.ndarray:
     """4点を 左上・右上・右下・左下 の順に並べる。"""
     pts = np.asarray(pts, np.float32).reshape(4, 2)
     s, d = pts.sum(1), np.diff(pts, axis=1).ravel()
     return np.array([pts[s.argmin()], pts[d.argmin()], pts[s.argmax()], pts[d.argmax()]], np.float32)
 
 
+def _fill_holes(mask: np.ndarray) -> np.ndarray:
+    """本の中の白い部分（文字や余白）が穴になっていても、本全体を塗りつぶす。"""
+    p = cv2.copyMakeBorder(mask, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0)
+    ff = p.copy()
+    cv2.floodFill(ff, np.zeros((p.shape[0] + 2, p.shape[1] + 2), np.uint8), (0, 0), 255)
+    holes = cv2.bitwise_not(ff)[1:-1, 1:-1]
+    return cv2.bitwise_or(mask, holes)
+
+
 def _clean(mask: np.ndarray) -> np.ndarray:
     k = max(3, int(min(mask.shape) * 0.012)) | 1
     m = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((k, k), np.uint8), iterations=2)
-    return cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((k, k), np.uint8))
+    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((k, k), np.uint8))
+    return _fill_holes(m)
 
 
 def _border_colors(lab: np.ndarray) -> np.ndarray:
-    """写真の四辺の色を3色に代表させる（木目や影があっても背景を覚えられるように）。"""
     h, w = lab.shape[:2]
     b = max(4, int(min(h, w) * 0.03))
     border = np.concatenate([lab[:b].reshape(-1, 3), lab[-b:].reshape(-1, 3),
@@ -65,59 +80,19 @@ def _bg_distance(lab: np.ndarray, centers: np.ndarray, l_weight: float) -> np.nd
     return np.min(np.stack([np.linalg.norm((lab - c) * wv, axis=-1) for c in centers]), axis=0)
 
 
-# ------------------------------------------------------------ 候補の四角形を出す
+# ------------------------------------------------------------ A. 本の形（マスク）を出す
 
-def _quads_from_contour(c):
-    area = cv2.contourArea(c)
-    if area <= 0:
-        return
-    peri = cv2.arcLength(c, True)
-    for eps in (0.012, 0.02, 0.03, 0.045):
-        ap = cv2.approxPolyDP(c, eps * peri, True)
-        if len(ap) == 4 and cv2.isContourConvex(ap):
-            q = ap.reshape(4, 2).astype(np.float32)
-            if cv2.contourArea(q) / area > 0.85:
-                yield q
-            break
-    yield cv2.boxPoints(cv2.minAreaRect(c)).astype(np.float32)
-
-
-def _quads_from_mask(mask: np.ndarray):
-    h, w = mask.shape
-    contours, _ = cv2.findContours(_clean(mask), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    for c in sorted(contours, key=cv2.contourArea, reverse=True)[:3]:
-        if cv2.contourArea(c) >= 0.05 * h * w:
-            yield from _quads_from_contour(c)
-            yield from _quads_from_contour(cv2.convexHull(c))
-
-
-def _masks_from_color(lab: np.ndarray, centers: np.ndarray):
+def _masks_from_color(lab, centers):
     """背景色との差。しきい値と「明るさをどれだけ気にするか」を何通りか試す。"""
     for l_weight in (1.0, 0.35):          # 0.35 は影や照明ムラに強い
         d = _bg_distance(lab, centers, l_weight)
         d8 = cv2.normalize(d, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
         otsu, _ = cv2.threshold(d8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        for t in (otsu, otsu * 0.6, otsu * 0.35):   # 低いしきい値ほど、背景に近い色の本も拾える
+        for t in (otsu, otsu * 0.6, otsu * 0.35):
             yield (d8 > max(4, t)).astype(np.uint8) * 255
 
 
-def _quads_from_edges(lab: np.ndarray):
-    """輪郭線から。白い本を白い机に置いたときなど、色の差が小さいときに効く。"""
-    h, w = lab.shape[:2]
-    L = cv2.GaussianBlur(lab[..., 0].astype(np.uint8), (5, 5), 0)
-    med = float(np.median(L))
-    for lo, hi in ((0.66 * med, 1.33 * med), (0.25 * med, 0.6 * med + 20)):
-        edges = cv2.Canny(L, max(5, lo), min(255, max(lo + 10, hi)))
-        edges = cv2.dilate(edges, np.ones((3, 3), np.uint8), iterations=2)
-        contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-        for c in sorted(contours, key=lambda c: cv2.contourArea(cv2.convexHull(c)), reverse=True)[:8]:
-            hull = cv2.convexHull(c)
-            if cv2.contourArea(hull) >= 0.05 * h * w:
-                yield from _quads_from_contour(hull)
-
-
 def _mask_grabcut(rgb: np.ndarray) -> np.ndarray:
-    """「四辺は背景、真ん中に本」とだけ教えて境目を探させる（OpenCV 標準の手法）。"""
     h, w = rgb.shape[:2]
     scale = 480 / max(h, w)
     small = cv2.resize(rgb, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
@@ -131,23 +106,112 @@ def _mask_grabcut(rgb: np.ndarray) -> np.ndarray:
     return cv2.resize(m, (w, h), interpolation=cv2.INTER_NEAREST)
 
 
-# ------------------------------------------------------------ 点数を付ける
+def _edge_shapes(lab: np.ndarray):
+    """輪郭線から。色の差が小さいとき（白い本を白い机に置くなど）に効く。塗りつぶした形を返す。"""
+    h, w = lab.shape[:2]
+    L = cv2.GaussianBlur(lab[..., 0].astype(np.uint8), (5, 5), 0)
+    med = float(np.median(L))
+    for lo, hi in ((0.66 * med, 1.33 * med), (0.25 * med, 0.6 * med + 20)):
+        edges = cv2.Canny(L, max(5, lo), min(255, max(lo + 10, hi)))
+        edges = cv2.dilate(edges, np.ones((3, 3), np.uint8), iterations=2)
+        contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+        for c in sorted(contours, key=lambda c: cv2.contourArea(cv2.convexHull(c)), reverse=True)[:6]:
+            hull = cv2.convexHull(c)
+            if cv2.contourArea(hull) >= 0.05 * h * w:
+                m = np.zeros((h, w), np.uint8)
+                cv2.fillConvexPoly(m, hull, 255)
+                yield m
 
-def _shape(q: np.ndarray):
-    rw = (np.linalg.norm(q[1] - q[0]) + np.linalg.norm(q[2] - q[3])) / 2
-    rh = (np.linalg.norm(q[3] - q[0]) + np.linalg.norm(q[2] - q[1])) / 2
-    return rw, rh
+
+def _hulls(mask: np.ndarray, min_frac: float = 0.05):
+    h, w = mask.shape
+    contours, _ = cv2.findContours(_clean(mask), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for c in sorted(contours, key=cv2.contourArea, reverse=True)[:2]:
+        if cv2.contourArea(c) >= min_frac * h * w:
+            yield cv2.convexHull(c)
 
 
-def score_quad(pts, grad, g_ref, lab, centers, noise=1.0) -> dict:
+# ------------------------------------------------------------ B. 「すべて含む」四角に当てはめる
+
+def _densify(hull: np.ndarray, step: float = 2.0) -> np.ndarray:
+    pts = hull.reshape(-1, 2).astype(np.float32)
+    out = []
+    for i in range(len(pts)):
+        a, b = pts[i], pts[(i + 1) % len(pts)]
+        n = max(1, int(np.linalg.norm(b - a) / step))
+        out.append(a + (b - a) * (np.arange(n)[:, None] / n))
+    return np.concatenate(out).astype(np.float32)
+
+
+def _line_intersect(l1, l2):
+    (x1, y1), (x2, y2) = l1
+    (x3, y3), (x4, y4) = l2
+    den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+    if abs(den) < 1e-6:
+        return None
+    a, b = x1 * y2 - y1 * x2, x3 * y4 - y3 * x4
+    return np.array([(a * (x3 - x4) - (x1 - x2) * b) / den, (a * (y3 - y4) - (y1 - y2) * b) / den], np.float32)
+
+
+def fit_enclosing_quad(hull: np.ndarray) -> np.ndarray:
+    """本の形（凸包）に4本の直線を当てはめ、凸包がすべて中に収まるまで外へ広げた四角形を返す。
+    斜めから撮った台形も、そのままの形で捉える。"""
+    dense = _densify(hull)
+    box = order_corners(cv2.boxPoints(cv2.minAreaRect(dense)))
+    centroid = dense.mean(axis=0)
+
+    # 各点を、いちばん近い箱の辺に割り当てる（角のそばは除く）
+    seg_d, assign, near_end = [], None, None
+    for i in range(4):
+        a, b = box[i], box[(i + 1) % 4]
+        ab = b - a
+        t = np.clip(((dense - a) @ ab) / max(1e-6, float(ab @ ab)), 0, 1)
+        proj = a + t[:, None] * ab
+        seg_d.append(np.linalg.norm(dense - proj, axis=1))
+    seg_d = np.stack(seg_d)
+    assign = seg_d.argmin(axis=0)
+
+    lines = []
+    for i in range(4):
+        a, b = box[i], box[(i + 1) % 4]
+        ab = b - a
+        t = ((dense - a) @ ab) / max(1e-6, float(ab @ ab))
+        sel = dense[(assign == i) & (t > 0.1) & (t < 0.9)]
+        if len(sel) >= 8:
+            vx, vy, x0, y0 = cv2.fitLine(sel, cv2.DIST_HUBER, 0, 0.01, 0.01).ravel()
+            p0 = np.array([x0, y0], np.float32)
+            d = np.array([vx, vy], np.float32)
+        else:
+            p0, d = a, ab / max(1e-6, float(np.linalg.norm(ab)))
+        n = np.array([-d[1], d[0]], np.float32)
+        if np.dot(p0 - centroid, n) < 0:
+            n = -n                                         # 外向き
+        # 凸包の点がすべて中に入るまで、直線を外へずらす
+        over = float(np.max((dense - p0) @ n))
+        if over > 0:
+            p0 = p0 + n * over
+        lines.append((p0 - d * 1000, p0 + d * 1000))
+
+    corners = [_line_intersect(lines[(i - 1) % 4], lines[i]) for i in range(4)]
+    if any(c is None for c in corners):
+        return box
+    q = order_corners(corners)
+    # 当てはめが暴れたら（交点が遠すぎる）、素直な長方形に戻す
+    if cv2.contourArea(q) > 1.5 * cv2.contourArea(box) or cv2.contourArea(q) < 0.5 * cv2.contourArea(box):
+        return box
+    return q
+
+
+def score_quad(pts, grad, g_ref, lab, centers, noise) -> dict:
     h, w = grad.shape
     q = order_corners(pts)
     area = cv2.contourArea(q)
     frac = area / (h * w)
     if frac < 0.05 or not cv2.isContourConvex(q.reshape(-1, 1, 2)):
         return {"score": -9.0}
-    rw, rh = _shape(q)
-    aspect = rw / max(rh, 1e-3)                 # 横÷縦。縦長なら 1 未満
+    rw = (np.linalg.norm(q[1] - q[0]) + np.linalg.norm(q[2] - q[3])) / 2
+    rh = (np.linalg.norm(q[3] - q[0]) + np.linalg.norm(q[2] - q[1])) / 2
+    aspect = rw / max(rh, 1e-3)
 
     center = q.mean(axis=0)
     off = max(3.0, min(h, w) * 0.015)
@@ -160,7 +224,7 @@ def score_quad(pts, grad, g_ref, lab, centers, noise=1.0) -> dict:
             return {"score": -9.0}
         n = np.array([-d[1], d[0]], np.float32) / ln
         if np.dot((p0 + p1) / 2 - center, n) < 0:
-            n = -n                                # 外向きにそろえる
+            n = -n
         vals = []
         for t in np.linspace(0.06, 0.94, 32):
             pt = p0 + d * t
@@ -173,8 +237,7 @@ def score_quad(pts, grad, g_ref, lab, centers, noise=1.0) -> dict:
                 out_d += float(np.min(np.linalg.norm(centers - lab[oy, ox], axis=1)))
                 out_n += 1
         vals = np.array(vals)
-        # 辺が「途切れず続く境目」か：机の細かい模様（ノイズ）よりはっきり強い点の割合
-        cont = float(np.mean(vals > max(4.0 * noise, 3.0)))
+        cont = float(np.mean(vals > max(4.0 * noise, 3.0)))       # 辺が途切れず続く境目か
         side.append(0.6 * cont + 0.4 * min(1.0, float(np.median(vals)) / g_ref))
 
     outside = 1.0 - min(1.0, (out_d / out_n) / 28.0) if out_n >= 20 else 0.5
@@ -183,7 +246,7 @@ def score_quad(pts, grad, g_ref, lab, centers, noise=1.0) -> dict:
     elif 0.42 <= aspect <= 0.95:
         shape_pt = 0.3
     elif aspect > 1.0:
-        shape_pt = -2.0                           # 横長は本ではない（縦向き前提）
+        shape_pt = -2.0                      # 横長は本ではない
     else:
         shape_pt = -0.8
     score = (2.0 * min(side) + 1.0 * float(np.mean(side)) + 1.5 * outside + shape_pt
@@ -191,98 +254,173 @@ def score_quad(pts, grad, g_ref, lab, centers, noise=1.0) -> dict:
     return {"score": score, "edge": min(side), "outside": outside, "aspect": aspect, "frac": frac}
 
 
-# ------------------------------------------------------------ 辺を境目に寄せる
+# ------------------------------------------------------------ C. 辺を外側の境目に寄せる
 
-def snap_quad(q: np.ndarray, grad: np.ndarray) -> np.ndarray:
+def snap_quad(q: np.ndarray, grad: np.ndarray, noise: float) -> np.ndarray:
+    """各辺を平行に動かして、近くにある「はっきりした境目」のうち、いちばん外側のものに合わせる。
+    （いちばんくっきりした線ではなく、いちばん外側の線。内側のイラストの枠に吸い寄せられない）"""
     h, w = grad.shape
     q = order_corners(q)
     center = q.mean(axis=0)
-    R = max(4, int(min(h, w) * 0.025))
-    offs = np.arange(-R, R + 1, 2, dtype=np.float32)
-    t = np.linspace(0.06, 0.94, 40, dtype=np.float32)[:, None]
-    lines = []
+    R = max(5, int(min(h, w) * 0.022))
+    offs = np.arange(-R, 3 * R + 1)
+    t = np.linspace(0.08, 0.92, 48, dtype=np.float32)[:, None]
+    new_lines = []
     for i in range(4):
         p0, p1 = q[i], q[(i + 1) % 4]
         d = p1 - p0
         n = np.array([-d[1], d[0]], np.float32) / max(1e-3, float(np.linalg.norm(d)))
         if np.dot((p0 + p1) / 2 - center, n) < 0:
             n = -n
-        best, best_pq = -1.0, (p0, p1)
-        for a in offs:
-            a0 = p0 + n * a
-            for b in offs:
-                a1 = p1 + n * b
-                pts = a0 + (a1 - a0) * t
-                xs = np.clip(np.round(pts[:, 0]).astype(int), 0, w - 1)
-                ys = np.clip(np.round(pts[:, 1]).astype(int), 0, h - 1)
-                v = float(grad[ys, xs].mean()) - 0.002 * (abs(a) + abs(b))
-                if v > best:
-                    best, best_pq = v, (a0, a1)
-        lines.append(best_pq)
-
-    def inter(l1, l2):
-        (x1, y1), (x2, y2) = l1
-        (x3, y3), (x4, y4) = l2
-        den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
-        if abs(den) < 1e-6:
-            return None
-        a, b = x1 * y2 - y1 * x2, x3 * y4 - y3 * x4
-        return np.array([(a * (x3 - x4) - (x1 - x2) * b) / den, (a * (y3 - y4) - (y1 - y2) * b) / den], np.float32)
-
-    corners = [inter(lines[(i - 1) % 4], lines[i]) for i in range(4)]
+        strength = np.zeros(len(offs), np.float32)
+        for k, a in enumerate(offs):
+            pts = (p0 + n * a) + d * t
+            best = np.zeros(len(t), np.float32)
+            for j in (-1, 0, 1):
+                xs = np.clip(np.round(pts[:, 0] + n[0] * j).astype(int), 0, w - 1)
+                ys = np.clip(np.round(pts[:, 1] + n[1] * j).astype(int), 0, h - 1)
+                best = np.maximum(best, grad[ys, xs])
+            strength[k] = float(np.median(best))             # 辺全体で見て強い線だけを拾う
+        win = (offs >= -R) & (offs <= R)
+        far = offs > R + 6
+        bg_s = float(np.median(strength[far])) if far.any() else noise
+        peak = float(strength[win].max())
+        need = max(0.55 * peak, 1.8 * bg_s, 1.5 * noise)
+        chosen = 0
+        if peak >= need:
+            cand = [int(a) for k, a in enumerate(offs)
+                    if win[k] and strength[k] >= need
+                    and strength[k] >= strength[max(0, k - 1)] and strength[k] >= strength[min(len(offs) - 1, k + 1)]]
+            if cand:
+                chosen = max(cand)                            # いちばん外側
+            else:
+                chosen = int(offs[win][int(np.argmax(strength[win]))])
+        new_lines.append((p0 + n * chosen, p1 + n * chosen))
+    corners = [_line_intersect(new_lines[(i - 1) % 4], new_lines[i]) for i in range(4)]
     if any(c is None for c in corners):
         return q
-    new = np.array(corners, np.float32)
-    return q if np.max(np.linalg.norm(new - q, axis=1)) > 3 * R else new
+    new = order_corners(corners)
+    return q if np.max(np.linalg.norm(new - q, axis=1)) > 4 * R else new
 
 
-# ------------------------------------------------------------ 本体
+# ------------------------------------------------------------ 本を探す
 
 def find_book(rgb: np.ndarray) -> dict | None:
-    """作業サイズの画像から、本の4隅（作業サイズの座標）と点数を返す。"""
+    """作業サイズの画像から、本の4隅（作業サイズの座標）・点数・警告を返す。"""
+    h, w = rgb.shape[:2]
     lab = cv2.cvtColor(cv2.GaussianBlur(rgb, (0, 0), 1.5), cv2.COLOR_RGB2LAB).astype(np.float32)
     centers = _border_colors(lab)
     gx = cv2.Sobel(lab, cv2.CV_32F, 1, 0, ksize=3)
     gy = cv2.Sobel(lab, cv2.CV_32F, 0, 1, ksize=3)
     grad = np.sqrt((gx ** 2 + gy ** 2).sum(axis=2))
     g_ref = max(1e-3, float(np.percentile(grad, 93)))
-    bw = max(4, int(min(grad.shape) * 0.03))
+    bw = max(4, int(min(h, w) * 0.03))
     noise = float(np.median(np.concatenate([grad[:bw].ravel(), grad[-bw:].ravel(),
                                             grad[:, :bw].ravel(), grad[:, -bw:].ravel()])))
 
     sources = (
-        ("背景色", lambda: (q for m in _masks_from_color(lab, centers) for q in _quads_from_mask(m))),
-        ("輪郭線", lambda: _quads_from_edges(lab)),
-        ("GrabCut", lambda: _quads_from_mask(_mask_grabcut(rgb))),
+        ("背景色", lambda: (hl for m in _masks_from_color(lab, centers) for hl in _hulls(m))),
+        ("輪郭線", lambda: (hl for m in _edge_shapes(lab) for hl in _hulls(m))),
+        ("GrabCut", lambda: _hulls(_mask_grabcut(rgb))),
     )
     cands = []
     for name, gen in sources:
         try:
-            for pts in gen():
-                s = score_quad(pts, grad, g_ref, lab, centers, noise)
+            for hull in gen():
+                q = fit_enclosing_quad(hull)
+                s = score_quad(q, grad, g_ref, lab, centers, noise)
                 if s["score"] > 0:
-                    cands.append({**s, "pts": order_corners(pts), "source": name})
+                    cands.append({**s, "pts": q, "source": name, "hull": hull})
         except cv2.error:
             continue
-        if cands and max(c["score"] for c in cands) > GOOD_ENOUGH and max(c["frac"] for c in cands if c["score"] > GOOD_ENOUGH - NEAR) > 0.25:
+        good = [c for c in cands if c["score"] > GOOD_ENOUGH - NEAR]
+        if cands and max(c["score"] for c in cands) > GOOD_ENOUGH and good and max(c["frac"] for c in good) > 0.25:
             break
     if not cands:
         return None
-    # 本の中のイラストや文字の囲みも「きれいな四角」に見えるので、
-    # 点数が近い候補どうしなら、外側（大きい方）の四角を選ぶ
     top = max(c["score"] for c in cands)
-    near = [c for c in cands if c["score"] >= top - NEAR and c["edge"] >= 0.3
+    # 本の色が机に近いと、辺の境目は弱くなる。そこで境目の強さは条件にせず、
+    # 「外側が机の色」で本らしい比率の候補なら、大きい方を選ぶ（切れるより余るほうがまし）
+    near = [c for c in cands if c["score"] >= top - NEAR and c["outside"] >= 0.5
             and ASPECT_MIN - 0.05 <= c["aspect"] <= ASPECT_MAX + 0.05]
     best = max(near, key=lambda c: c["frac"]) if near else max(cands, key=lambda c: c["score"])
-    snapped = snap_quad(best["pts"], grad)
+
+    snapped = snap_quad(best["pts"], grad, noise)
     s2 = score_quad(snapped, grad, g_ref, lab, centers, noise)
-    if s2["score"] >= best["score"] - 0.15:
+    if s2["score"] >= best["score"] - 0.3:
         best.update(s2, pts=snapped)
+
+    # 警告：本が写真の端で切れていないか
+    q = best["pts"]
+    m = max(3, int(min(h, w) * 0.01))
+    out_of_frame = int((q[:, 0] < m).sum() + (q[:, 0] > w - 1 - m).sum() + (q[:, 1] < m).sum() + (q[:, 1] > h - 1 - m).sum())
+    best["clipped"] = out_of_frame >= 2
+    best["centers"] = centers
     return best
 
 
-def cut_out(img: Image.Image, max_side: int = 2000) -> tuple[Image.Image, str, bool]:
-    """写真から本を切り出す。戻り値：(画像, 説明, 見つかったか)。
+# ------------------------------------------------------------ D. 切り出し
+
+def _expand(q: np.ndarray, pad: float) -> np.ndarray:
+    """四角形を各辺の外側へ、辺の長さ×pad だけ広げる。"""
+    q = order_corners(q)
+    center = q.mean(axis=0)
+    lines = []
+    for i in range(4):
+        p0, p1 = q[i], q[(i + 1) % 4]
+        d = p1 - p0
+        ln = float(np.linalg.norm(d))
+        n = np.array([-d[1], d[0]], np.float32) / max(1e-3, ln)
+        if np.dot((p0 + p1) / 2 - center, n) < 0:
+            n = -n
+        # 辺に直交する向きの長さを基準にする
+        other = np.linalg.norm(q[(i + 2) % 4] - q[(i + 1) % 4]) if i % 2 == 0 else np.linalg.norm(q[(i + 1) % 4] - q[i])
+        lines.append((p0 + n * pad * ln, p1 + n * pad * ln))
+    corners = [_line_intersect(lines[(i - 1) % 4], lines[i]) for i in range(4)]
+    return q if any(c is None for c in corners) else order_corners(corners)
+
+
+def _warp(full: np.ndarray, q: np.ndarray) -> np.ndarray:
+    tl, tr, br, bl = order_corners(q)
+    w = int(round(max(np.linalg.norm(tr - tl), np.linalg.norm(br - bl))))
+    h = int(round(max(np.linalg.norm(bl - tl), np.linalg.norm(br - tr))))
+    M = cv2.getPerspectiveTransform(np.array([tl, tr, br, bl], np.float32),
+                                    np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], np.float32))
+    return cv2.warpPerspective(full, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+
+
+def _trim_background(rect: np.ndarray, centers: np.ndarray) -> np.ndarray:
+    """余裕を付けて切り出した画像から、机の色が続いている外周だけを削る。削る量には上限がある。"""
+    h, w = rect.shape[:2]
+    sc = 300 / max(h, w)
+    small = cv2.resize(rect, (max(8, int(w * sc)), max(8, int(h * sc))), interpolation=cv2.INTER_AREA)
+    lab = cv2.cvtColor(cv2.GaussianBlur(small, (0, 0), 1.0), cv2.COLOR_RGB2LAB).astype(np.float32)
+    dist = _bg_distance(lab, centers, 0.6)
+    book = dist > 14.0                                     # 机の色から十分離れている＝本
+    sh, sw = book.shape
+    rows, cols = book.mean(axis=1), book.mean(axis=0)
+
+    def first(v, maxcut):
+        cut = int(maxcut)
+        for i in range(0, cut + 1):
+            if v[i] >= 0.6:
+                return i
+        return None
+
+    mx, my = int(MAX_TRIM * sw / (1 + 2 * PAD)), int(MAX_TRIM * sh / (1 + 2 * PAD))
+    top, bottom = first(rows, my), first(rows[::-1], my)
+    left, right = first(cols, mx), first(cols[::-1], mx)
+    if None in (top, bottom, left, right):
+        # 机の色が見分けられない（白い本を白い机に置いたなど）。余裕分をそのまま内側に戻す
+        k = PAD / (1 + 2 * PAD)
+        top = bottom = int(round(k * sh)); left = right = int(round(k * sw))
+    t, b = int(top / sc), int(bottom / sc)
+    l, r = int(left / sc), int(right / sc)
+    return rect[t:h - b if b else h, l:w - r if r else w]
+
+
+def cut_out(img: Image.Image, max_side: int = 2000) -> tuple[Image.Image, str, bool, str]:
+    """写真から本を切り出す。戻り値：(画像, 説明, 見つかったか, 警告)。
     見つからなければ写真をそのまま返す（向きは変えない）。"""
     img = ImageOps.exif_transpose(img).convert("RGB")
     if max(img.size) > max_side:
@@ -297,17 +435,17 @@ def cut_out(img: Image.Image, max_side: int = 2000) -> tuple[Image.Image, str, b
         print(f"[点数 {best['score']:.2f} 輪郭 {best.get('edge', 0):.2f} 外側 {best.get('outside', 0):.2f} "
               f"縦横 {best.get('aspect', 0):.2f} 面積 {best.get('frac', 0):.2f}] ", end="")
     if best is None or best["score"] < MIN_SCORE:
-        return Image.fromarray(full).convert("RGBA"), "本が見つからず写真をそのまま使用", False
+        return Image.fromarray(full).convert("RGBA"), "本が見つからず写真をそのまま使用", False, ""
 
-    tl, tr, br, bl = order_corners(best["pts"] / sc)
-    w = int(round(max(np.linalg.norm(tr - tl), np.linalg.norm(br - bl))))
-    h = int(round(max(np.linalg.norm(bl - tl), np.linalg.norm(br - tr))))
-    M = cv2.getPerspectiveTransform(np.array([tl, tr, br, bl]),
-                                    np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], np.float32))
-    out = cv2.warpPerspective(full, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
-    m = max(2, int(min(w, h) * 0.006))            # 端に残った背景をほんの少し落とす
-    out = out[m:h - m, m:w - m]
-    return Image.fromarray(out).convert("RGBA"), f"切り抜き（{best['source']}）", True
+    q = order_corners(best["pts"] / sc)
+    rect = _warp(full, _expand(q, PAD))
+    rect = _trim_background(rect, best["centers"])
+    warn = ""
+    if best["clipped"]:
+        warn = "本が写真の端で切れている可能性（撮り直し推奨）"
+    elif best["score"] < 4.2:
+        warn = "輪郭があまりはっきりしない（切り抜きを目で確認）"
+    return Image.fromarray(rect).convert("RGBA"), f"切り抜き（{best['source']}）", True, warn
 
 
 def debug_overlay(img: Image.Image, path: str) -> None:
@@ -317,6 +455,7 @@ def debug_overlay(img: Image.Image, path: str) -> None:
     rgb = np.array(img)
     best = find_book(rgb)
     if best is not None:
-        cv2.polylines(rgb, [best["pts"].astype(np.int32).reshape(-1, 1, 2)], True, (0, 200, 0), 4)
-        cv2.putText(rgb, f"{best['score']:.1f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 200, 0), 2)
+        color = (0, 200, 0) if best["score"] >= MIN_SCORE and not best["clipped"] else (230, 120, 0)
+        cv2.polylines(rgb, [best["pts"].astype(np.int32).reshape(-1, 1, 2)], True, color, 4)
+        cv2.putText(rgb, f"{best['score']:.1f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
     Image.fromarray(rgb).save(path)

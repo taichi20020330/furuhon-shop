@@ -1,0 +1,31 @@
+{
+  "_comment": "本棚の一覧。sample:true の人はデモ用の架空ユーザー（本は owner の本を分けて使っています）。categories を空にすると全カテゴリ。",
+  "shelves": [
+    {
+      "id": "taichi", "name": "たいち", "handle": "taichi", "owner": true,
+      "bio": "大学院生。読み終えた本を手放します。",
+      "orderEndpoint": "https://script.google.com/macros/s/AKfycby6Kl6vrvfdKFrHEHlPc-J09LaOMCUF3J97HDRUJD235S1lBcB1mdYA9VMnMyodGeshkw/exec",
+      "categories": []
+    },
+    {
+      "id": "mio", "name": "みお", "handle": "mio_books", "sample": true,
+      "bio": "小説と物語の本棚。夜に読むものが多め。",
+      "categories": ["文学"]
+    },
+    {
+      "id": "ren", "name": "れん", "handle": "ren_think", "sample": true,
+      "bio": "社会・思想・法。考えごとの本棚。",
+      "categories": ["社会学", "哲学・思想", "法・政治"]
+    },
+    {
+      "id": "hana", "name": "はな", "handle": "hana_atelier", "sample": true,
+      "bio": "ことばと暮らしと美術。洋書もすこし。",
+      "categories": ["芸術・暮らし", "語学", "洋書"]
+    },
+    {
+      "id": "sou", "name": "そう", "handle": "sou_misc", "sample": true,
+      "bio": "歴史、科学、いろいろ。雑多な本棚。",
+      "categories": ["その他", "歴史・地理", "科学", "自然科学", "産業"]
+    }
+  ]
+}

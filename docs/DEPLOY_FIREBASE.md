@@ -2,10 +2,10 @@
 
 1. コンソールで **Storage →「始める」**（ロケーションは asia-northeast1 / 東京）。Blaze への切替と予算アラートは設定済みの前提。
 2. Mac に Firebase CLI：`npm install -g firebase-tools` → `firebase login`
-3. 関数の Python 環境（Python 3.12 推奨）：
+3. 関数の Python 環境（Python 3.11）：
    ```
    cd functions
-   python3.12 -m venv venv && source venv/bin/activate
+   python3.11 -m venv venv && source venv/bin/activate
    pip install -r requirements.txt
    cd ..
    ```

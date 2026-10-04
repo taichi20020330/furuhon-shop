@@ -45,3 +45,10 @@
 .form-page .err { color: var(--sold); font-size: 12px; min-height: 1em; }
 .notice { background: var(--accent-soft); border-radius: 12px; padding: 12px 14px; font-size: 13px; color: var(--accent); }
 .steps { margin: 0; padding-left: 1.2em; font-size: 13px; color: var(--ink-soft); }
+.state.empty { display: flex; justify-content: center; align-items: center; flex-direction: column; text-align: center; gap: 6px; align-content: center; padding: 0 24px; }
+.state.empty > div b { font-family: var(--f-display); font-size: 20px; }
+.state.empty > div span { color: var(--ink-soft); font-size: 13px; }
+.state.empty p { margin: 0; }
+.state.empty .btn { margin-top: 14px; }
+.form-page .btn { align-self: stretch; }
+.form-page .lead a { color: var(--accent); }

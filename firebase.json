@@ -1,0 +1,13 @@
+{
+  "firestore": { "rules": "firestore.rules" },
+  "storage": { "rules": "storage.rules" },
+  "functions": [
+    {
+      "source": "functions",
+      "codebase": "default",
+      "runtime": "python311",
+      "ignore": ["venv", "__pycache__", ".git"],
+      "predeploy": ["cp tools/book_cutout.py tools/process_photos.py functions/"]
+    }
+  ]
+}

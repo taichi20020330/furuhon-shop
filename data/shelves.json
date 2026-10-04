@@ -1,0 +1,14 @@
+{
+  "_comment": "本棚の一覧（お店の持ち主）。登録ユーザーは Firestore から読み込まれる。",
+  "shelves": [
+    {
+      "id": "taichi",
+      "name": "中村",
+      "handle": "pinoko72447",
+      "owner": true,
+      "bio": "大学院生。読み終えた本を手放します。",
+      "orderEndpoint": "https://script.google.com/macros/s/AKfycby6Kl6vrvfdKFrHEHlPc-J09LaOMCUF3J97HDRUJD235S1lBcB1mdYA9VMnMyodGeshkw/exec",
+      "categories": []
+    }
+  ]
+}

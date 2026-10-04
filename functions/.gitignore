@@ -1,0 +1,5 @@
+# デプロイ時に tools/ からコピーされる
+book_cutout.py
+process_photos.py
+venv/
+__pycache__/

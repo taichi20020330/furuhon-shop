@@ -1,0 +1,42 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // プロフィール：誰でも読める。書けるのは本人だけ（メールアドレスなどは置かない）
+    match /users/{uid} {
+      allow read: if true;
+      allow create: if request.auth != null && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['username','name','bio','createdAt'])
+        && request.resource.data.username is string
+        && request.resource.data.username.matches('^[a-z0-9_]{3,20}$')
+        && request.resource.data.bio is string && request.resource.data.bio.size() <= 200;
+      allow update: if request.auth != null && request.auth.uid == uid
+        && request.resource.data.username == resource.data.username
+        && request.resource.data.keys().hasOnly(['username','name','bio','createdAt'])
+        && request.resource.data.bio.size() <= 200;
+      allow delete: if false;
+    }
+    // ユーザーネームの予約：早い者勝ち。一度取ったら本人でも書き換え不可
+    match /usernames/{name} {
+      allow read: if true;
+      allow create: if request.auth != null && name.matches('^[a-z0-9_]{3,20}$')
+        && !(name in ['taichi','pinoko72447','admin','shelves','signup','login','upload','manage'])
+        && request.resource.data.keys().hasOnly(['uid']) && request.resource.data.uid == request.auth.uid;
+      allow update, delete: if false;
+    }
+    // 写真処理の依頼：本人が作れる（queued のみ）。読めるのは本人だけ。更新はサーバーだけ
+    match /jobs/{jobId} {
+      allow read: if request.auth != null && resource.data.uid == request.auth.uid;
+      allow create: if request.auth != null && request.auth.token.email_verified == true
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.status == 'queued'
+        && request.resource.data.keys().hasOnly(['uid','status','files','createdAt'])
+        && request.resource.data.files is list && request.resource.data.files.size() <= 60;
+      allow update, delete: if false;
+    }
+    // 本（次の段階で使う）：誰でも読める。書けるのは持ち主だけ
+    match /shelves/{uid}/books/{bookId} {
+      allow read: if true;
+      allow write: if request.auth != null && request.auth.uid == uid;
+    }
+  }
+}

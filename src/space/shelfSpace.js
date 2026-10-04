@@ -114,8 +114,9 @@ function makeBook(b, rand) {
   el.className = "book" + (b.sold ? " sold" : "");
   el.dataset.id = b.id;
   el.style.cssText = `left:${b._x}px;top:${b._y}px;--w:${f.w}px;--ar:${f.ar};--dur:${(6 + rand() * 4).toFixed(2)}s;--delay:${(-rand() * 8).toFixed(2)}s;--r0:${(-2 + rand() * 1.5).toFixed(2)}deg;--r1:${(0.5 + rand() * 1.8).toFixed(2)}deg`;
-  const front = b.front ? `<img src="${esc(b.front)}" alt="${esc(b.title)}の表紙" draggable="false" loading="lazy" decoding="async">` : coverHTML(b, "front");
-  const back = b.back ? `<img src="${esc(b.back)}" alt="${esc(b.title)}の裏表紙" draggable="false" loading="lazy" decoding="async">` : coverHTML(b, "back");
+  // 空間では小さい表紙(thumb)だけ読む。裏表紙は、本を開いたときに初めて読み込む（通信量を減らすため）
+  const front = (b.thumb || b.front) ? `<img src="${esc(b.thumb || b.front)}" alt="${esc(b.title)}の表紙" draggable="false" loading="lazy" decoding="async">` : coverHTML(b, "front");
+  const back = b.back ? `<img data-src="${esc(b.back)}" alt="${esc(b.title)}の裏表紙" draggable="false" decoding="async">` : coverHTML(b, "back");
   el.innerHTML = `
     <div class="float">
       <div class="flip" role="button" tabindex="0" aria-label="${esc(b.title)}を裏返す">
@@ -292,7 +293,11 @@ function handleTap(e) {
   else closeAll();
 }
 function closeAll(except) { root.querySelectorAll(".book.open").forEach(el => { if (el !== except) el.classList.remove("open"); }); }
-function toggleOpen(el) { closeAll(el); el.classList.toggle("open"); }
+function toggleOpen(el) {
+  closeAll(el); el.classList.toggle("open");
+  const bi = el.querySelector(".back img[data-src]");
+  if (bi) { bi.src = bi.dataset.src; bi.removeAttribute("data-src"); }
+}
 world.addEventListener("keydown", e => {
   if ((e.key === "Enter" || e.key === " ") && e.target.classList.contains("flip")) { e.preventDefault(); toggleOpen(e.target.closest(".book")); }
 });
@@ -320,7 +325,7 @@ function renderPicks() {
   const list = BOOKS.filter(b => picked.has(b.id));
   const total = list.reduce((s, b) => s + b.price, 0);
   $("thumbs").innerHTML = list.map(b => {
-    if (b.front) return `<img src="${esc(b.front)}" alt="${esc(b.title)}">`;
+    if (b.front) return `<img src="${esc(b.thumb || b.front)}" alt="${esc(b.title)}">`;
     const [bg, band] = PALETTE[hash(b.publisher) % PALETTE.length];
     return `<span class="mini" style="--c-bg:${bg};--c-band:${band}" title="${esc(b.title)}"></span>`;
   }).join("");

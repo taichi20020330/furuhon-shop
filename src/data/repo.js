@@ -23,7 +23,7 @@ async function loadStatic() {
 const fromBook = d => { const b = d.data(); return {
   id: d.id, title: b.title || "書名準備中", author: b.author || "", publisher: b.publisher || "", label: b.label || "",
   category: b.category || "未分類", format: b.format || "bunko", price: Number(b.price) || 0, condition: b.condition || "",
-  sold: !!b.sold, sample: false, front: imageUrl(b.front), back: imageUrl(b.back),
+  sold: !!b.sold, sample: false, front: imageUrl(b.front), thumb: imageUrl(b.thumb), back: imageUrl(b.back),
 }; };
 export async function listMyBooks(uid) {
   const snap = await getDocs(collection(db, "shelves", uid, "books"));
@@ -53,6 +53,6 @@ export async function getShelf(id) {
     const u = fromUser(q.docs[0]);
     const all = await loadUserBooks(u.uid);
     const shown = all.filter(b => b.price > 0 && b.front);
-    return { ...u, books: shown, pending: all.length - shown.length, cover: shown.filter(b => !b.sold).slice(0, 4).map(b => b.front) };
+    return { ...u, books: shown, pending: all.length - shown.length, cover: shown.filter(b => !b.sold).slice(0, 4).map(b => b.thumb || b.front) };
   } catch { return null; }
 }

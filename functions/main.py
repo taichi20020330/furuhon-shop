@@ -10,13 +10,17 @@ from firebase_admin import firestore, initialize_app, storage
 from firebase_functions import firestore_fn, options
 
 initialize_app()
+from billing_guard import stop_billing  # noqa: E402,F401  予算超過で請求を止める関数もデプロイ対象にする
 MAX_BOOKS = 30     # 1人あたりの本の上限
 MAX_PHOTOS = 80   # 1ジョブの上限（40冊ぶん）。イベント起動の関数は最長9分のため。画面側で60枚ずつに分けて送る
 
 
-def _webp_bytes(im):
+def _webp_bytes(im, height, quality):
+    """高さを height に縮めて webp にする（通信量を減らすため、用途ごとに小さくする）"""
+    if im.height > height:
+        im = im.resize((round(im.width * height / im.height), height))
     buf = io.BytesIO()
-    im.convert("RGBA" if im.mode in ("RGBA", "LA", "P") else "RGB").save(buf, "WEBP", quality=82, method=6)
+    im.convert("RGBA" if im.mode in ("RGBA", "LA", "P") else "RGB").save(buf, "WEBP", quality=quality, method=6)
     return buf.getvalue()
 
 
@@ -63,18 +67,20 @@ def process_job(event: firestore_fn.Event[firestore_fn.DocumentSnapshot]) -> Non
     def save_book(bid, front, back, info, warns):
         base = f"users/{uid}/cut/{bid}"
         paths = {}
-        for side, im in (("front", front), ("back", back)):
+        # 表紙：空間用の小さい版(thumb 高さ320)と拡大用(front 高さ760)。裏表紙は拡大用のみ（開いたときだけ読み込まれる）
+        for key, im, h, q in (("thumb", front, 320, 72), ("front", front, 760, 76), ("back", back, 760, 76)):
             if im is None:
                 continue
-            blob = bucket.blob(f"{base}-{side}.webp")
+            name = {"thumb": f"{base}-thumb.webp", "front": f"{base}-front.webp", "back": f"{base}-back.webp"}[key]
+            blob = bucket.blob(name)
             blob.cache_control = "public, max-age=31536000"
-            blob.upload_from_string(_webp_bytes(im), content_type="image/webp")
-            paths[side] = f"{base}-{side}.webp"
+            blob.upload_from_string(_webp_bytes(im, h, q), content_type="image/webp")
+            paths[key] = name
         books_col.document(bid).set({
             "id": bid, "isbn": info.get("isbn", ""), "title": info.get("title", ""), "author": info.get("author", ""),
             "publisher": info.get("publisher", ""), "label": info.get("label", ""), "category": info.get("category", "") or "未分類",
             "format": info.get("format", "") or "bunko", "price": 0, "condition": "", "sold": False,
-            "front": paths.get("front", ""), "back": paths.get("back", ""), "warnings": warns,
+            "front": paths.get("front", ""), "thumb": paths.get("thumb", ""), "back": paths.get("back", ""), "warnings": warns,
             "jobId": job_id, "createdAt": firestore.SERVER_TIMESTAMP,
         })
 

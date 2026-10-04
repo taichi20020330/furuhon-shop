@@ -1,4 +1,4 @@
-import { createUserWithEmailAndPassword, signInWithEmailAndPassword, deleteUser } from "firebase/auth";
+import { createUserWithEmailAndPassword, signInWithEmailAndPassword, deleteUser, sendEmailVerification } from "firebase/auth";
 import { doc, runTransaction, serverTimestamp } from "firebase/firestore";
 import { auth, db } from "../firebase.js";
 
@@ -18,6 +18,7 @@ export async function signUp({ username, email, password }) {
     await deleteUser(cred.user).catch(() => {});   // ネーム重複などは、作りかけのアカウントを消してやり直せるように
     throw e;
   }
+  sendEmailVerification(cred.user).catch(() => {});   // 確認メール（届かなければ、アップロード画面から再送できる）
   return cred.user;
 }
 export const logIn = ({ email, password }) => signInWithEmailAndPassword(auth, email, password);

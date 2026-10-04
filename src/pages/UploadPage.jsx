@@ -12,7 +12,8 @@ const MAX_BOOKS = 30;   // 1人あたりの本の上限
 const uuid = () => [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, "0")).join("");
 const CHUNK = 60;  // サーバー処理は60枚ずつの依頼に分ける
 export default function UploadPage() {
-  const { user, profile, ready } = useAuth();
+  const { user, profile, ready, verified, recheck, resend } = useAuth();
+  const [vmsg, setVmsg] = useState("");
   const input = useRef(null);
   const [files, setFiles] = useState([]);
   const [phase, setPhase] = useState("pick");      // pick → uploading → processing → done / error
@@ -43,6 +44,19 @@ export default function UploadPage() {
   }, [phase, jobs]);
 
   if (ready && !user) return <Navigate to="/login" replace />;
+
+  if (ready && user && !verified) return (
+    <>
+      <AppBar title="本を追加" back={profile ? `/s/${profile.username}` : "/"} />
+      <main className="form-page">
+        <h1>メールの確認をお願いします</h1>
+        <p className="lead">不正な利用を防ぐため、写真を送る前にメールアドレスの確認が必要です。登録したアドレスに届いたメールのリンクを開いてください（迷惑メールフォルダも見てください）。</p>
+        <button className="btn" onClick={async () => setVmsg((await recheck()) ? "" : "まだ確認できていません。メールのリンクを開いてから、もう一度押してください。")}>確認した</button>
+        <button className="btn ghost" onClick={async () => { try { await resend(); setVmsg("確認メールを再送しました。"); } catch { setVmsg("しばらくしてから、もう一度お試しください。"); } }}>メールを再送する</button>
+        {vmsg && <div className="notice">{vmsg}</div>}
+      </main>
+    </>
+  );
 
   const pick = e => {
     const list = [...e.target.files].filter(f => f.type.startsWith("image/")).sort((a, b) => a.lastModified - b.lastModified || a.name.localeCompare(b.name));

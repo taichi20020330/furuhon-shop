@@ -14,7 +14,7 @@ from book_cutout import cut_out
 HEIGHT = 900
 
 
-def run_batch(items, existing_ids, save_book, on_progress=None, lookup=True):
+def run_batch(items, existing_ids, save_book, on_progress=None, lookup=True, limit=None):
     """items: [(Path, 撮影時刻 or None, 元の名前)]。save_book(bid, front_img, back_img, info, warns) を1冊ごとに呼ぶ。
     戻り値: (作った冊数, 失敗した写真の名前のリスト)"""
     photos_in = []
@@ -28,6 +28,12 @@ def run_batch(items, existing_ids, save_book, on_progress=None, lookup=True):
 
     def emit(front: pp.Photo, back):
         nonlocal made
+        if limit is not None and made >= limit:      # 本棚の上限を超えた分は登録しない
+            for ph in (front, back):
+                if ph:
+                    ph.image = None
+            failed.append("（上限のため登録されなかった本があります）") if "（上限のため登録されなかった本があります）" not in failed else None
+            return
         isbn = (back.isbn if back else "") or front.isbn
         bid = pp.new_id(isbn or f"b-{int(front.taken)}", ids)
         ids.add(bid)

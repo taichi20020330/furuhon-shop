@@ -5,8 +5,9 @@ import { doc, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
 import AppBar from "../components/AppBar.jsx";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { db, storage } from "../firebase.js";
+import { listMyBooks } from "../data/repo.js";
 
-const MAX = 400;   // 1回に選べる写真の上限（200冊ぶん）
+const MAX_BOOKS = 30;   // 1人あたりの本の上限
 // crypto.randomUUID は https か localhost でしか使えない（LAN のIPで開くスマホでは undefined）ため、自前で作る
 const uuid = () => [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, "0")).join("");
 const CHUNK = 60;  // サーバー処理は60枚ずつの依頼に分ける
@@ -19,6 +20,10 @@ export default function UploadPage() {
   const [jobs, setJobs] = useState([]);
   const [stats, setStats] = useState({});
   const [msg, setMsg] = useState("");
+  const [have, setHave] = useState(null);
+  useEffect(() => { if (user) listMyBooks(user.uid).then(l => setHave(l.length)).catch(() => setHave(0)); }, [user]);
+  const room = Math.max(0, MAX_BOOKS - (have ?? 0));
+  const MAX = room * 2 + 2;   // 写真の上限（表裏で1冊＋少し余裕）
 
   useEffect(() => {
     if (phase !== "processing" || !jobs.length) return;
@@ -41,7 +46,7 @@ export default function UploadPage() {
 
   const pick = e => {
     const list = [...e.target.files].filter(f => f.type.startsWith("image/")).sort((a, b) => a.lastModified - b.lastModified || a.name.localeCompare(b.name));
-    if (list.length > MAX) { setMsg(`1回に送れるのは${MAX}枚までです。分けてください。`); setFiles(list.slice(0, MAX)); } else setMsg("");
+    if (list.length > MAX) { setMsg(`あと${room}冊ぶん（${MAX}枚まで）です。多い分は外しました。`); setFiles(list.slice(0, MAX)); } else setMsg("");
     setFiles(list.slice(0, MAX));
   };
 
@@ -78,9 +83,10 @@ export default function UploadPage() {
       <main className="form-page">
         {phase === "pick" && <>
           <h1>写真をまとめて追加</h1>
-          <p className="lead">本を上から、<b>表紙 → 裏表紙（バーコード）</b>の順に撮って、まとめて選んでください。何冊ぶんでも一度に送れます（1回{MAX}枚まで）。</p>
+          <p className="lead">本を上から、<b>表紙 → 裏表紙（バーコード）</b>の順に撮って、まとめて選んでください。本棚には{MAX_BOOKS}冊まで置けます（いま{have ?? "…"}冊・あと{room}冊）。</p>
           <input ref={input} type="file" accept="image/*" multiple hidden onChange={pick} />
-          <button className="btn ghost" onClick={() => input.current.click()}>写真を選ぶ</button>
+          <button className="btn ghost" disabled={room === 0} onClick={() => input.current.click()}>写真を選ぶ</button>
+          {room === 0 && <div className="err">上限に達しています。「管理」から不要な本を削除してください。</div>}
           {typeof msg === "string" && msg && <div className="err">{msg}</div>}
           {files.length > 0 && <>
             <div className="notice">{files.length}枚（約{Math.ceil(files.length / 2)}冊）を選びました。撮影した順に表と裏を組にします。</div>

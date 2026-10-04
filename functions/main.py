@@ -10,6 +10,7 @@ from firebase_admin import firestore, initialize_app, storage
 from firebase_functions import firestore_fn, options
 
 initialize_app()
+MAX_BOOKS = 30     # 1人あたりの本の上限
 MAX_PHOTOS = 80   # 1ジョブの上限（40冊ぶん）。イベント起動の関数は最長9分のため。画面側で60枚ずつに分けて送る
 
 
@@ -42,6 +43,11 @@ def process_job(event: firestore_fn.Event[firestore_fn.DocumentSnapshot]) -> Non
     ref.update({"status": "running", "done": 0, "total": len(files), "books": 0})
     books_col = db.collection("shelves").document(uid).collection("books")
     existing = {s.id for s in books_col.select([]).stream()}
+
+    remaining = MAX_BOOKS - len(existing)
+    if remaining <= 0:
+        ref.update({"status": "error", "message": f"本棚の上限（{MAX_BOOKS}冊）に達しています。不要な本を削除してください"})
+        return
 
     tmp = Path(tempfile.mkdtemp())
     items = []
@@ -80,7 +86,7 @@ def process_job(event: firestore_fn.Event[firestore_fn.DocumentSnapshot]) -> Non
             ref.update({"done": n, "books": made})
 
     try:
-        made, failed = run_batch(items, existing, save_book, progress)
+        made, failed = run_batch(items, existing, save_book, progress, limit=remaining)
         ref.update({"status": "done", "books": made, "failed": failed, "done": len(files)})
     except Exception as e:  # noqa: BLE001
         ref.update({"status": "error", "message": f"処理中にエラー: {type(e).__name__}"})

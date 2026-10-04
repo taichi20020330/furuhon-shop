@@ -8,7 +8,8 @@ import { listMyBooks } from "../data/repo.js";
 
 const CATS = ["文学", "社会学", "哲学・思想", "法・政治", "歴史・地理", "芸術・暮らし", "語学", "洋書", "科学", "産業", "その他"];
 export default function ManagePage() {
-  const { user, profile, ready } = useAuth();
+  const { user, profile, ready, reload } = useAuth();
+  const [bioMsg, setBioMsg] = useState("");
   const [books, setBooks] = useState(null);
   const [err, setErr] = useState("");
   useEffect(() => { if (user) listMyBooks(user.uid).then(l => setBooks(l.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0)))).catch(e => setErr(e.code || e.message)); }, [user]);
@@ -17,12 +18,21 @@ export default function ManagePage() {
   const patch = (id, v) => setBooks(bs => bs.map(b => b.id === id ? { ...b, ...v } : b));
   const save = async (b, v) => { patch(b.id, v); try { await updateDoc(doc(db, "shelves", user.uid, "books", b.id), v); } catch (e) { setErr(e.code || e.message); } };
   const remove = async b => { if (!confirm(`「${b.title || "書名なし"}」を削除しますか？`)) return; await deleteDoc(doc(db, "shelves", user.uid, "books", b.id)); setBooks(bs => bs.filter(x => x.id !== b.id)); };
+  const saveBio = async e => {
+    const bio = e.target.value.trim().slice(0, 60);
+    if (bio === (profile?.bio || "")) return;
+    try { await updateDoc(doc(db, "users", user.uid), { bio }); await reload(); setBioMsg("保存しました"); setTimeout(() => setBioMsg(""), 1500); }
+    catch (er) { setBioMsg(`保存できませんでした（${er.code || er.message}）`); }
+  };
   const unpriced = books?.filter(b => !(b.price > 0)).length || 0;
 
   return (
     <>
       <AppBar title="本の管理" sub={books ? `${books.length}冊` : ""} back={profile ? `/s/${profile.username}` : "/"} />
       <main className="form-page">
+        {profile && <label>ひとこと（みんなの本棚の一覧に表示されます・60文字まで）
+          <input key={profile.bio} defaultValue={profile.bio || ""} maxLength={60} placeholder="例：小説と詩集が多めです。" onBlur={saveBio} />
+          <span className="err" style={{ color: "var(--accent)" }}>{bioMsg}</span></label>}
         {err && <div className="err">エラー：{err}</div>}
         {!books && !err && <p className="lead">読み込み中…</p>}
         {books && books.length === 0 && <p className="lead">まだ本がありません。</p>}

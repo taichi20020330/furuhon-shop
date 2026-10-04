@@ -27,6 +27,7 @@ export default function ShelfPage({ id: fixedId, home }) {
       {shelf && shelf.books.length === 0 && (
         <div className="state empty">
           <div><b>{shelf.name}</b><span> @{shelf.handle}</span></div>
+          {shelf.bio && <p>{shelf.bio}</p>}
           <p>{shelf.pending ? "値段が入ると、本が浮かびます。" : "まだ本が浮かんでいません。"}</p>
           {mine && <div className="row"><Link className="btn" to="/upload">本を追加</Link>{shelf.pending > 0 && <Link className="btn ghost" to="/manage">値段を入れる</Link>}</div>}
           {mine && <button className="btn ghost" onClick={logout}>ログアウト</button>}

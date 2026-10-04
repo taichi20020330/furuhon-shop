@@ -7,6 +7,8 @@ import { useAuth } from "../auth/AuthContext.jsx";
 import { db, storage } from "../firebase.js";
 
 const MAX = 400;   // 1回に選べる写真の上限（200冊ぶん）
+// crypto.randomUUID は https か localhost でしか使えない（LAN のIPで開くスマホでは undefined）ため、自前で作る
+const uuid = () => [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, "0")).join("");
 const CHUNK = 60;  // サーバー処理は60枚ずつの依頼に分ける
 export default function UploadPage() {
   const { user, profile, ready } = useAuth();
@@ -46,7 +48,7 @@ export default function UploadPage() {
   const start = async () => {
     setPhase("uploading"); setSent(0); setMsg("");
     try {
-      const jobIds = Array.from({ length: Math.ceil(files.length / CHUNK) }, () => crypto.randomUUID());
+      const jobIds = Array.from({ length: Math.ceil(files.length / CHUNK) }, () => uuid());
       const metas = new Array(files.length);
       let next = 0, done = 0;
       const worker = async () => {

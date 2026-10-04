@@ -20,7 +20,7 @@ export default function ShelfPage({ id: fixedId, home }) {
   const mine = !!(user && shelf && user.uid === shelf.uid);
   return (
     <>
-      <AppBar title={shelf ? `${shelf.name}の本棚` : "本棚"} sub={shelf ? `${shelf.books.length}冊` : ""} back={home ? null : "/shelves"} mine={mine} />
+      <AppBar title={home ? "浮かぶ古本屋" : shelf ? `${shelf.name}の本棚` : "本棚"} sub={shelf ? `${shelf.books.length}冊` : ""} back={home ? null : "/shelves"} mine={mine} />
       {err && <p className="state">この本棚は見つかりませんでした。</p>}
       {!shelf && !err && <p className="state">読み込み中…</p>}
       {shelf && shelf.books.length > 0 && <ShelfSpace shelf={shelf} intro={!!state?.fly} />}

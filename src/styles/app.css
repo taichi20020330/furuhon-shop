@@ -63,3 +63,7 @@
 .form-page a.btn { text-align: center; text-decoration: none; padding: 12px; box-sizing: border-box; }
 .state.empty .row { display: flex; gap: 8px; margin-top: 14px; }
 .state.empty .row .btn { margin: 0; }
+
+/* 取り置きができるのは、お店の持ち主（owner）の本棚だけ。ほかの人の本棚は、写真と値段を見るだけ。 */
+.no-order .pick, .no-order .info-pick, .no-order .tray, .no-order #zpick { display: none !important; }
+.no-order .zoom { bottom: calc(env(safe-area-inset-bottom, 0px) + 24px); }

@@ -10,5 +10,5 @@ export default function ShelfSpace({ shelf, intro }) {
     const h = mountShelfSpace(root, { books: shelf.books, shopName: `${shelf.name}の本棚`, orderEndpoint: shelf.orderEndpoint || "", intro });
     return () => { h.destroy(); root.innerHTML = ""; };
   }, [shelf, intro]);
-  return <div ref={ref} className="space-root" />;
+  return <div ref={ref} className={"space-root" + (shelf.owner ? "" : " no-order")} />;
 }

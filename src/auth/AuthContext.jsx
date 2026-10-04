@@ -34,5 +34,8 @@ export function authMessage(e) {
     "auth/network-request-failed": "通信できませんでした。電波を確認してください",
     "username-taken": "このユーザーネームはすでに使われています",
   };
-  return m[e?.code] || m[e?.message] || "うまくいきませんでした。もう一度お試しください";
+  const known = m[e?.code] || m[e?.message];
+  if (known) return known;
+  console.error(e);
+  return `うまくいきませんでした（${e?.code || e?.message || "unknown"}）`;
 }

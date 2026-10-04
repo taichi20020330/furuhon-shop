@@ -1,0 +1,17 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // 元写真：本人だけが置ける（読めるのはサーバー処理だけ）。画像のみ・1枚20MBまで
+    match /users/{uid}/raw/{jobId}/{file} {
+      allow write: if request.auth != null && request.auth.uid == uid
+        && request.resource.size < 20 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+      allow read: if false;
+    }
+    // 切り抜き後の画像：誰でも見られる。書けるのはサーバー処理だけ
+    match /users/{uid}/cut/{file} {
+      allow read: if true;
+      allow write: if false;
+    }
+  }
+}

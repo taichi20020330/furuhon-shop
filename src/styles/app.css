@@ -52,3 +52,14 @@
 .state.empty .btn { margin-top: 14px; }
 .form-page .btn { align-self: stretch; }
 .form-page .lead a { color: var(--accent); }
+
+.mrow { display: flex; gap: 12px; padding: 12px; border: 1px solid var(--hair); border-radius: 14px; align-items: flex-start; }
+.mrow img { width: 64px; height: 90px; object-fit: contain; flex: none; background: #fafafa; border-radius: 6px; }
+.mf { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.mf input, .mf select { font-size: 16px; padding: 8px 10px; border: 1px solid var(--hair); border-radius: 8px; background: #fff; width: 100%; box-sizing: border-box; }
+.mf .two { display: flex; gap: 8px; } .mf .two label { flex: 1; min-width: 0; font-size: 11px; }
+.mf .warn { color: var(--sold); font-size: 11px; }
+.mf .del { align-self: flex-end; border: 0; background: none; color: var(--ink-soft); font-size: 12px; padding: 4px; cursor: pointer; }
+.form-page a.btn { text-align: center; text-decoration: none; padding: 12px; box-sizing: border-box; }
+.state.empty .row { display: flex; gap: 8px; margin-top: 14px; }
+.state.empty .row .btn { margin: 0; }

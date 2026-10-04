@@ -10,9 +10,12 @@
 - `firestore.rules` と `storage.rules` が変わったので再デプロイ：`firebase deploy --only firestore:rules,storage,functions`
 
 ## 2. App Check（このアプリ以外からの通信を弾く）
-1. https://www.google.com/recaptcha/admin で **reCAPTCHA v3** のサイトを作る（ドメイン：taichi20020330.github.io と localhost）。「サイトキー」と「シークレットキー」が出る。
-2. Firebase コンソール → App Check → アプリを選び →「reCAPTCHA」→ **シークレットキー**を貼って登録。
-3. `src/firebase.js` の `APPCHECK_SITE_KEY` に **サイトキー**を入れる。
+reCAPTCHA は従来版（v3）の新規作成ができなくなったため、**reCAPTCHA Enterprise**（Google Cloud 側）を使う。月1万回の判定まで無料で、このアプリの規模なら十分。
+1. Google Cloud コンソール（プロジェクト furuhon-shop）→「reCAPTCHA Enterprise」→ API を有効化 →「キーを作成」。
+   - プラットフォーム：**ウェブサイト**／ドメイン：`taichi20020330.github.io` と `localhost`／「チェックボックスを使用」は**オフ**（スコアベース）。
+   - 作成された**サイトキー**（長い文字列）をコピー。
+2. Firebase コンソール → App Check → アプリを選び →「reCAPTCHA Enterprise」→ 上のサイトキーを貼って登録。
+3. `src/firebase.js` の `APPCHECK_SITE_KEY` に同じ**サイトキー**を入れる。
 4. 開発中（localhost / LAN のIP）：ブラウザのコンソールに「App Check debug token」が出る → App Check →「デバッグトークンを管理」に登録。
 5. App Check の画面で **Cloud Firestore だけ**「適用（Enforce）」を押す。
    - Storage は適用しない（画像を `<img>` で直接読むため、適用すると画像が出なくなる）。Storage は「ログイン済み＋メール確認済み＋サイズ制限」で守る。

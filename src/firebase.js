@@ -3,7 +3,7 @@ import { initializeApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
-import { initializeAppCheck, ReCaptchaV3Provider } from "firebase/app-check";
+import { initializeAppCheck, ReCaptchaEnterpriseProvider } from "firebase/app-check";
 
 const firebaseConfig = {
   apiKey: "AIzaSyAJGJSRAbO-h8qUmfLZLxk0fWEfDh_jS3Y",
@@ -17,11 +17,11 @@ const firebaseConfig = {
 export const app = initializeApp(firebaseConfig);
 
 // App Check：「このアプリから来た通信」であることを証明して、それ以外からの大量アクセスを弾く。
-// reCAPTCHA v3 のサイトキー（公開してよい値）をここに入れると有効になる。空のあいだは何もしない。docs/SECURITY.md 参照。
+// reCAPTCHA Enterprise のサイトキー（公開してよい値）をここに入れると有効になる。空のあいだは何もしない。docs/SECURITY.md 参照。
 const APPCHECK_SITE_KEY = "";
 if (APPCHECK_SITE_KEY) {
   if (import.meta.env.DEV) self.FIREBASE_APPCHECK_DEBUG_TOKEN = true;   // 開発中は、コンソールに出るデバッグトークンを登録して使う
-  initializeAppCheck(app, { provider: new ReCaptchaV3Provider(APPCHECK_SITE_KEY), isTokenAutoRefreshEnabled: true });
+  initializeAppCheck(app, { provider: new ReCaptchaEnterpriseProvider(APPCHECK_SITE_KEY), isTokenAutoRefreshEnabled: true });
 }
 export const auth = getAuth(app);
 export const db = getFirestore(app);

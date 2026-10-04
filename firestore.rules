@@ -19,7 +19,7 @@ service cloud.firestore {
     match /usernames/{name} {
       allow read: if true;
       allow create: if request.auth != null && name.matches('^[a-z0-9_]{3,20}$')
-        && !(name in ['taichi','mio','ren','hana','sou','admin','shelves','signup','login'])
+        && !(name in ['taichi','pinoko72447','admin','shelves','signup','login','upload','manage'])
         && request.resource.data.keys().hasOnly(['uid']) && request.resource.data.uid == request.auth.uid;
       allow update, delete: if false;
     }

@@ -5,7 +5,7 @@ import { signUp } from "../auth/accounts.js";
 import { authMessage, useAuth } from "../auth/AuthContext.jsx";
 
 const emailOk = v => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
-const RESERVED = ["taichi", "mio", "ren", "hana", "sou", "admin", "shelves", "signup", "login"];
+const RESERVED = ["taichi", "pinoko72447", "admin", "shelves", "signup", "login", "upload", "manage"];
 export default function SignupPage() {
   const nav = useNavigate();
   const { reload } = useAuth();

@@ -18,7 +18,7 @@ export const app = initializeApp(firebaseConfig);
 
 // App Check：「このアプリから来た通信」であることを証明して、それ以外からの大量アクセスを弾く。
 // reCAPTCHA Enterprise のサイトキー（公開してよい値）をここに入れると有効になる。空のあいだは何もしない。docs/SECURITY.md 参照。
-const APPCHECK_SITE_KEY = "";
+const APPCHECK_SITE_KEY = "6Lfy4d0tAAAAALojZEg4WYCz7KfPyLo6OHz9AuwW";
 if (APPCHECK_SITE_KEY) {
   if (import.meta.env.DEV) self.FIREBASE_APPCHECK_DEBUG_TOKEN = true;   // 開発中は、コンソールに出るデバッグトークンを登録して使う
   initializeAppCheck(app, { provider: new ReCaptchaEnterpriseProvider(APPCHECK_SITE_KEY), isTokenAutoRefreshEnabled: true });

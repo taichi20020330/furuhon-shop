@@ -10,7 +10,7 @@ from firebase_admin import firestore, initialize_app, storage
 from firebase_functions import firestore_fn, options
 
 initialize_app()
-MAX_PHOTOS = 160   # 1回あたりの上限（80冊ぶん）
+MAX_PHOTOS = 80   # 1ジョブの上限（40冊ぶん）。イベント起動の関数は最長9分のため。画面側で60枚ずつに分けて送る
 
 
 def _webp_bytes(im):
@@ -21,7 +21,7 @@ def _webp_bytes(im):
 
 @firestore_fn.on_document_created(
     document="jobs/{jobId}", region="asia-northeast1",
-    memory=options.MemoryOption.GB_2, timeout_sec=1800, max_instances=3,
+    memory=options.MemoryOption.GB_2, timeout_sec=540, max_instances=3,
 )
 def process_job(event: firestore_fn.Event[firestore_fn.DocumentSnapshot]) -> None:
     from batch import run_batch   # 重い import は起動時でなく実行時に

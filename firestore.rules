@@ -29,7 +29,7 @@ service cloud.firestore {
       allow create: if request.auth != null && request.resource.data.uid == request.auth.uid
         && request.resource.data.status == 'queued'
         && request.resource.data.keys().hasOnly(['uid','status','files','createdAt'])
-        && request.resource.data.files is list && request.resource.data.files.size() <= 160;
+        && request.resource.data.files is list && request.resource.data.files.size() <= 80;
       allow update, delete: if false;
     }
     // 本（次の段階で使う）：誰でも読める。書けるのは持ち主だけ

@@ -1,26 +1,39 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, Navigate } from "react-router-dom";
 import { ref, uploadBytesResumable } from "firebase/storage";
-import { addDoc, collection, doc, onSnapshot, serverTimestamp } from "firebase/firestore";
+import { doc, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
 import AppBar from "../components/AppBar.jsx";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { db, storage } from "../firebase.js";
 
-const MAX = 160;   // 1回に送れる写真の上限（80冊ぶん）
+const MAX = 400;   // 1回に選べる写真の上限（200冊ぶん）
+const CHUNK = 60;  // サーバー処理は60枚ずつの依頼に分ける
 export default function UploadPage() {
   const { user, profile, ready } = useAuth();
   const input = useRef(null);
   const [files, setFiles] = useState([]);
   const [phase, setPhase] = useState("pick");      // pick → uploading → processing → done / error
   const [sent, setSent] = useState(0);
-  const [job, setJob] = useState(null);
+  const [jobs, setJobs] = useState([]);
+  const [stats, setStats] = useState({});
   const [msg, setMsg] = useState("");
 
-  useEffect(() => { if (phase !== "processing" || !job) return; return onSnapshot(doc(db, "jobs", job), s => {
-    const d = s.data(); if (!d) return; setMsg(d);
-    if (d.status === "done") setPhase("done");
-    if (d.status === "error") setPhase("error");
-  }); }, [phase, job]);
+  useEffect(() => {
+    if (phase !== "processing" || !jobs.length) return;
+    const all = {};
+    const apply = () => {
+      const v = Object.values(all);
+      if (v.length < jobs.length) return;
+      const sum = k => v.reduce((a, d) => a + (d[k] || 0), 0);
+      const m = { total: sum("total"), done: sum("done"), books: sum("books"), failed: v.flatMap(d => d.failed || []), running: v.some(d => d.status === "running") };
+      setStats(m);
+      if (v.every(d => d.status === "done" || d.status === "error")) {
+        if (v.every(d => d.status === "error")) { setMsg({ message: v[0].message }); setPhase("error"); } else setPhase("done");
+      }
+    };
+    const offs = jobs.map(id => onSnapshot(doc(db, "jobs", id), s => { if (s.data()) { all[id] = s.data(); apply(); } }));
+    return () => offs.forEach(f => f());
+  }, [phase, jobs]);
 
   if (ready && !user) return <Navigate to="/login" replace />;
 
@@ -33,25 +46,30 @@ export default function UploadPage() {
   const start = async () => {
     setPhase("uploading"); setSent(0); setMsg("");
     try {
-      const jobId = crypto.randomUUID();
+      const jobIds = Array.from({ length: Math.ceil(files.length / CHUNK) }, () => crypto.randomUUID());
       const metas = new Array(files.length);
       let next = 0, done = 0;
       const worker = async () => {
         while (next < files.length) {
           const i = next++, f = files[i];
-          const path = `users/${user.uid}/raw/${jobId}/${String(i).padStart(4, "0")}-${f.name.replace(/[^\w.\-]/g, "_")}`;
+          const path = `users/${user.uid}/raw/${jobIds[Math.floor(i / CHUNK)]}/${String(i).padStart(4, "0")}-${f.name.replace(/[^\w.\-]/g, "_")}`;
           await new Promise((res, rej) => { const t = uploadBytesResumable(ref(storage, path), f, { contentType: f.type }); t.on("state_changed", null, rej, res); });
           metas[i] = { path, taken: f.lastModified, name: f.name };
           setSent(++done);
         }
       };
       await Promise.all([worker(), worker(), worker()]);
-      const jobRef = await addDoc(collection(db, "jobs"), { uid: user.uid, status: "queued", files: metas, createdAt: serverTimestamp() });
-      setJob(jobRef.id); setPhase("processing");
+      const made = [];
+      for (let c = 0; c < jobIds.length; c++) {
+        const part = metas.slice(c * CHUNK, (c + 1) * CHUNK);
+        await setDoc(doc(db, "jobs", jobIds[c]), { uid: user.uid, status: "queued", files: part, createdAt: serverTimestamp() });
+        made.push(jobIds[c]);
+      }
+      setJobs(made); setPhase("processing");
     } catch (e) { console.error(e); setMsg({ message: `アップロードに失敗しました（${e?.code || e?.message}）` }); setPhase("error"); }
   };
 
-  const m = typeof msg === "object" ? msg : {};
+  const m = phase === "processing" || phase === "done" ? stats : (typeof msg === "object" ? msg : {});
   return (
     <>
       <AppBar title="本を追加" back={profile ? `/s/${profile.username}` : "/"} />
@@ -75,7 +93,7 @@ export default function UploadPage() {
         {phase === "processing" && <>
           <h1>本を切り抜いています</h1>
           <progress max={m.total || files.length} value={m.done || 0} style={{ width: "100%" }} />
-          <p className="lead">{m.status === "running" ? `${m.done || 0} / ${m.total} 枚　（${m.books || 0}冊できました）` : "順番を待っています…"}<br />この画面を閉じても処理は続きます。</p>
+          <p className="lead">{m.total ? `${m.done || 0} / ${m.total} 枚　（${m.books || 0}冊できました）` : "順番を待っています…"}<br />この画面を閉じても処理は続きます。</p>
         </>}
         {phase === "done" && <>
           <h1>できました</h1>
